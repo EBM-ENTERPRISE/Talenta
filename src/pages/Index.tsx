@@ -1,9 +1,59 @@
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import TalentaLogo from "@/components/TalentaLogo";
 import SearchInput from "@/components/SearchInput";
 import ActionButtons from "@/components/ActionButtons";
+import ThoughtsPanel from "@/components/ThoughtsPanel";
+import ResultsPanel from "@/components/ResultsPanel";
 
 const Index = () => {
+  const [showResults, setShowResults] = useState(false);
+  const [currentPrompt, setCurrentPrompt] = useState("");
+
+  const handleSubmit = (prompt: string) => {
+    setCurrentPrompt(prompt);
+    setShowResults(true);
+  };
+
+  const handleBack = () => {
+    setShowResults(false);
+    setCurrentPrompt("");
+  };
+
+  if (showResults) {
+    return (
+      <div className="min-h-screen flex flex-col">
+        {/* Header */}
+        <header className="w-full px-6 py-4 flex items-center justify-between border-b border-border/40 bg-background/80 backdrop-blur-sm">
+          <div className="flex items-center gap-4">
+            <Button
+              variant="ghost"
+              onClick={handleBack}
+              className="hover:bg-accent"
+            >
+              ← Voltar
+            </Button>
+            <TalentaLogo />
+          </div>
+          <div className="flex items-center gap-3">
+            <Button 
+              variant="default"
+              className="h-9 px-6 bg-primary hover:bg-primary/90 text-foreground rounded-full font-medium"
+            >
+              Login
+            </Button>
+          </div>
+        </header>
+
+        {/* Results View */}
+        <div className="flex-1 flex overflow-hidden">
+          <ThoughtsPanel />
+          <ResultsPanel />
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen flex flex-col">
       {/* Header */}
@@ -39,7 +89,7 @@ const Index = () => {
           </div>
 
           {/* Search Input */}
-          <SearchInput />
+          <SearchInput onSubmit={handleSubmit} />
 
           {/* Action Buttons */}
           <ActionButtons />
