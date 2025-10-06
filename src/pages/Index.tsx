@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
+import { Link } from "react-router-dom";
 import TalentaLogo from "@/components/TalentaLogo";
 import SearchInput from "@/components/SearchInput";
 import ActionButtons from "@/components/ActionButtons";
@@ -13,6 +14,11 @@ const Index = () => {
   const handleSubmit = (prompt: string) => {
     setCurrentPrompt(prompt);
     setShowResults(true);
+  };
+
+  const handleNewPrompt = (prompt: string) => {
+    setCurrentPrompt(prompt);
+    // Here you would trigger a new search with the updated prompt
   };
 
   const handleBack = () => {
@@ -36,18 +42,20 @@ const Index = () => {
             <TalentaLogo />
           </div>
           <div className="flex items-center gap-3">
-            <Button 
-              variant="default"
-              className="h-9 px-6 bg-primary hover:bg-primary/90 text-foreground rounded-full font-medium"
-            >
-              Login
-            </Button>
+            <Link to="/auth">
+              <Button 
+                variant="default"
+                className="h-9 px-6 bg-primary hover:bg-primary/90 text-foreground rounded-full font-medium"
+              >
+                Login
+              </Button>
+            </Link>
           </div>
         </header>
 
         {/* Results View */}
         <div className="flex-1 flex overflow-hidden">
-          <ThoughtsPanel />
+          <ThoughtsPanel onNewPrompt={handleNewPrompt} />
           <ResultsPanel />
         </div>
       </div>
@@ -60,18 +68,22 @@ const Index = () => {
       <header className="w-full px-6 py-6 flex items-center justify-between max-w-7xl mx-auto">
         <TalentaLogo />
         <div className="flex items-center gap-3">
-          <Button 
-            variant="default"
-            className="h-11 px-8 bg-primary hover:bg-primary/90 text-foreground rounded-full font-medium transition-all hover:scale-105 shadow-[0_2px_10px_rgba(124,198,255,0.3)]"
-          >
-            Login
-          </Button>
-          <Button 
-            variant="default"
-            className="h-11 px-8 bg-primary hover:bg-primary/90 text-foreground rounded-full font-medium transition-all hover:scale-105 shadow-[0_2px_10px_rgba(124,198,255,0.3)]"
-          >
-            Registrar
-          </Button>
+          <Link to="/auth">
+            <Button 
+              variant="default"
+              className="h-11 px-8 bg-primary hover:bg-primary/90 text-foreground rounded-full font-medium transition-all hover:scale-105 shadow-[0_2px_10px_rgba(124,198,255,0.3)]"
+            >
+              Login
+            </Button>
+          </Link>
+          <Link to="/auth">
+            <Button 
+              variant="default"
+              className="h-11 px-8 bg-primary hover:bg-primary/90 text-foreground rounded-full font-medium transition-all hover:scale-105 shadow-[0_2px_10px_rgba(124,198,255,0.3)]"
+            >
+              Registrar
+            </Button>
+          </Link>
         </div>
       </header>
 
