@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Link } from "react-router-dom";
 import TalentaLogo from "@/components/TalentaLogo";
@@ -6,10 +6,27 @@ import SearchInput from "@/components/SearchInput";
 import ActionButtons from "@/components/ActionButtons";
 import ThoughtsPanel from "@/components/ThoughtsPanel";
 import ResultsPanel from "@/components/ResultsPanel";
+import { supabase } from "@/lib/utils";
 
 const Index = () => {
   const [showResults, setShowResults] = useState(false);
   const [currentPrompt, setCurrentPrompt] = useState("");
+  const [sessionEmail, setSessionEmail] = useState<string | null>(null);
+
+  useEffect(() => {
+    const { data: sub } = supabase.auth.onAuthStateChange((event, session) => {
+      console.log('[Index] auth state change', { event, email: session?.user?.email });
+      setSessionEmail(session?.user?.email ?? null);
+    });
+    // fetch initial session
+    supabase.auth.getSession().then(({ data }) => {
+      console.log('[Index] initial session', { email: data.session?.user?.email });
+      setSessionEmail(data.session?.user?.email ?? null);
+    });
+    return () => {
+      sub.subscription.unsubscribe();
+    };
+  }, []);
 
   const handleSubmit = (prompt: string) => {
     setCurrentPrompt(prompt);
@@ -42,14 +59,27 @@ const Index = () => {
             <TalentaLogo />
           </div>
           <div className="flex items-center gap-3">
-            <Link to="/auth">
+            {sessionEmail ? (
               <Button 
                 variant="default"
                 className="h-9 px-6 bg-primary hover:bg-primary/90 text-foreground rounded-full font-medium"
+                onClick={() => {
+                  console.log('[Index] salvar click', { prompt: currentPrompt });
+                  // TODO: implementar salvar
+                }}
               >
-                Login
+                Salvar
               </Button>
-            </Link>
+            ) : (
+              <Link to="/auth?mode=login">
+                <Button 
+                  variant="default"
+                  className="h-9 px-6 bg-primary hover:bg-primary/90 text-foreground rounded-full font-medium"
+                >
+                  Login
+                </Button>
+              </Link>
+            )}
           </div>
         </header>
 
@@ -68,22 +98,45 @@ const Index = () => {
       <header className="w-full px-6 py-6 flex items-center justify-between max-w-7xl mx-auto">
         <TalentaLogo />
         <div className="flex items-center gap-3">
-          <Link to="/auth">
-            <Button 
-              variant="default"
-              className="h-11 px-8 bg-primary hover:bg-primary/90 text-foreground rounded-full font-medium transition-all hover:scale-105 shadow-[0_2px_10px_rgba(124,198,255,0.3)]"
-            >
-              Login
-            </Button>
-          </Link>
-          <Link to="/auth">
-            <Button 
-              variant="default"
-              className="h-11 px-8 bg-primary hover:bg-primary/90 text-foreground rounded-full font-medium transition-all hover:scale-105 shadow-[0_2px_10px_rgba(124,198,255,0.3)]"
-            >
-              Registrar
-            </Button>
-          </Link>
+          {sessionEmail ? (
+            <>
+              <span className="text-sm text-foreground/80">{sessionEmail}</span>
+              <Button
+                variant="outline"
+                onClick={async () => { 
+                  console.log('[Index] signOut click');
+                  const { error } = await supabase.auth.signOut();
+                  if (error) {
+                    console.error('[Index] signOut error', error);
+                  } else {
+                    console.log('[Index] signOut success');
+                  }
+                }}
+                className="h-11 px-6 rounded-full"
+              >
+                Sair
+              </Button>
+            </>
+          ) : (
+            <>
+              <Link to="/auth?mode=login">
+                <Button 
+                  variant="default"
+                  className="h-11 px-8 bg-primary hover:bg-primary/90 text-foreground rounded-full font-medium transition-all hover:scale-105 shadow-[0_2px_10px_rgba(124,198,255,0.3)]"
+                >
+                  Login
+                </Button>
+              </Link>
+              <Link to="/auth?mode=register">
+                <Button 
+                  variant="default"
+                  className="h-11 px-8 bg-primary hover:bg-primary/90 text-foreground rounded-full font-medium transition-all hover:scale-105 shadow-[0_2px_10px_rgba(124,198,255,0.3)]"
+                >
+                  Registrar
+                </Button>
+              </Link>
+            </>
+          )}
         </div>
       </header>
 
