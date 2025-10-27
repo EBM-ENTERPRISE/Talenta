@@ -13,8 +13,18 @@ declare const Deno: {
 type ScrapeInput = {
   startUrls?: { url: string }[];
   keyword?: string[];
+  search?: string;
+  position?: string;
   location?: string;
   publishedAt?: string;
+  saveOnlyUniqueItems?: boolean;
+};
+
+type RefineResponse = {
+  keyword: string[];
+  location?: string;
+  publishedAt?: string; // e.g., r86400, r604800
+  startUrls?: { url: string }[];
   saveOnlyUniqueItems?: boolean;
 };
 
@@ -41,10 +51,12 @@ const APIFY_TOKEN = Deno.env.get("APIFY_API_TOKEN");
 const ACTOR_ID = Deno.env.get("APIFY_API_ATOR") || "2rJKkhh7vjpX7pvjg";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE") || Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+const GROQ_API_KEY = Deno.env.get("GROQ_API_KEY");
 
 if (!APIFY_TOKEN) console.error("[scrape-linkedin-jobs] Missing APIFY_API_TOKEN secret");
 if (!SUPABASE_URL) console.error("[scrape-linkedin-jobs] Missing SUPABASE_URL secret");
 if (!SUPABASE_SERVICE_ROLE_KEY) console.error("[scrape-linkedin-jobs] Missing SUPABASE_SERVICE_ROLE key");
+if (!GROQ_API_KEY) console.warn("[scrape-linkedin-jobs] Missing GROQ_API_KEY; prompt refinement will be skipped");
 
 const supabase = createClient(String(SUPABASE_URL), String(SUPABASE_SERVICE_ROLE_KEY));
 
@@ -85,6 +97,132 @@ async function fetchDatasetItems(datasetId: string): Promise<ApifyJobItem[]> {
   const resp = await fetch(url);
   const itemsJson = (await resp.json()) as unknown;
   return Array.isArray(itemsJson) ? (itemsJson as ApifyJobItem[]) : [];
+}
+
+function buildLinkedinUrl(keywords: string[], location?: string, publishedAt?: string): string {
+  const params = new URLSearchParams();
+  if (keywords.length) params.set("keywords", keywords.join(" "));
+  if (location) params.set("location", location);
+  if (publishedAt) params.set("f_TPR", publishedAt);
+  return `https://www.linkedin.com/jobs/search/?${params.toString()}`;
+}
+
+function detectLocationFromPrompt(prompt: string): string | undefined {
+  const m = prompt.match(/(?:em|in)\s+([^,.\n]+)/i);
+  return m ? m[1].trim() : undefined;
+}
+
+function extractRoleFromPrompt(prompt: string): string | undefined {
+  // tenta capturar "vaga de X" ou "de X em Y" ou "para X"
+  const patterns = [
+    /vaga\s+de\s+([^,.\n]+?)(?=\s+em\s+|$)/i,
+    /de\s+([^,.\n]+?)\s+em\s+/i,
+    /para\s+([^,.\n]+?)(?=\s+em\s+|$)/i,
+  ];
+  for (const re of patterns) {
+    const m = prompt.match(re);
+    if (m && m[1]) return m[1].trim();
+  }
+  return undefined;
+}
+
+function normalizeKeywords(keywords: string[] | undefined, prompt: string): string[] {
+  const stop = new Set([
+    "quero","procuro","busco","uma","um","vaga","vagas","em","para","de","no","na","o","a",
+  ]);
+  // se conseguimos extrair cargo diretamente do prompt, prioriza
+  const role = extractRoleFromPrompt(prompt);
+  const base = role ? [role] : (Array.isArray(keywords) ? keywords : [prompt]);
+  const cleaned: string[] = [];
+  for (const k of base) {
+    const t = String(k)
+      .toLowerCase()
+      .replace(/["'`]/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+    const words = t.split(" ").filter(w => !stop.has(w));
+    if (words.length) cleaned.push(words.join(" "));
+  }
+  // remove duplicados e itens muito curtos
+  const unique = Array.from(new Set(cleaned)).filter(s => s.length >= 3);
+  return unique.length ? unique : [prompt.trim()];
+}
+
+async function refinePromptWithGroq(prompt: string): Promise<RefineResponse> {
+  if (!GROQ_API_KEY) {
+    // Fallback simples quando não há chave GROQ: extrai palavras por espaço e tenta detectar cidade após "em"
+    const location = detectLocationFromPrompt(prompt);
+    const keywords = normalizeKeywords(undefined, prompt);
+    const url = buildLinkedinUrl(keywords, location, "r604800");
+    return { keyword: keywords, location, publishedAt: "r604800", startUrls: [{ url }], saveOnlyUniqueItems: false };
+  }
+
+  const system = `Transforme pedidos de vagas em JSON para scraper. Regras:
+- keyword: EXTRAIA APENAS o cargo/área (sem frases como "quero uma vaga..."). Ex.: ["desenvolvedor web"].
+- location: cidade e país, se houver. Ex.: "Lisboa, Portugal".
+- publishedAt: r86400 ou r604800.
+- startUrls: URL de busca do LinkedIn montada com keywords + location.
+- saveOnlyUniqueItems: boolean.
+Retorne APENAS JSON válido, sem texto adicional.`;
+  const user = `Prompt: "${prompt}"
+Exemplos:
+- "quero uma vaga de desenvolvedor web em lisboa" -> {"keyword":["desenvolvedor web"],"location":"Lisboa, Portugal","publishedAt":"r604800"}
+- "data scientist porto" -> {"keyword":["data scientist"],"location":"Porto, Portugal","publishedAt":"r604800"}
+Diretivas:
+- Remova palavras de enchimento (quero, vaga, em, para, de etc.).
+- keyword deve conter só o cargo (1–3 termos).`;
+
+  const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${GROQ_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: "groq/compound-mini",
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: user },
+      ],
+      temperature: 0.2,
+      response_format: { type: "json_object" },
+    }),
+  });
+  const data = await resp.json();
+  const content: string = data?.choices?.[0]?.message?.content ?? "";
+  let parsed: RefineResponse | null = null;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    // tentar extrair bloco de JSON
+    const m = content.match(/\{[\s\S]*\}/);
+    if (m) {
+      try {
+        parsed = JSON.parse(m[0]);
+      } catch {
+        parsed = null;
+      }
+    }
+  }
+  if (!parsed) {
+    // fallback
+    const location = detectLocationFromPrompt(prompt);
+    const keywords = normalizeKeywords(undefined, prompt);
+    const url = buildLinkedinUrl(keywords, location, "r604800");
+    return { keyword: keywords, location, publishedAt: "r604800", startUrls: [{ url }], saveOnlyUniqueItems: false };
+  }
+  // garantir campos mínimos
+  const keywords = normalizeKeywords(parsed.keyword, prompt);
+  const publishedAt = parsed.publishedAt ?? "r604800";
+  const location = parsed.location ?? detectLocationFromPrompt(prompt);
+  const startUrls = parsed.startUrls && parsed.startUrls.length ? parsed.startUrls : [{ url: buildLinkedinUrl(keywords, location, publishedAt) }];
+  return {
+    keyword: keywords,
+    location,
+    publishedAt,
+    startUrls,
+    saveOnlyUniqueItems: parsed.saveOnlyUniqueItems ?? false,
+  };
 }
 
 async function ensureLinkedinSource() {
@@ -132,7 +270,26 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
-    const input = (await req.json()) as ScrapeInput;
+    const incoming = (await req.json()) as (ScrapeInput & { prompt?: string });
+
+    // Se veio um prompt livre, refinar com Groq e montar o input do Actor
+    let input: ScrapeInput = incoming;
+    let refineStatus: "ia" | "fallback" | "none" = "none";
+    if (incoming.prompt && incoming.prompt.trim().length > 0) {
+      const refined = await refinePromptWithGroq(incoming.prompt.trim());
+      console.log("[scrape-linkedin-jobs] refined", refined);
+      refineStatus = GROQ_API_KEY ? "ia" : "fallback";
+      const kws = normalizeKeywords(refined.keyword, incoming.prompt);
+      input = {
+        startUrls: refined.startUrls && refined.startUrls.length ? refined.startUrls : [{ url: buildLinkedinUrl(kws, refined.location, refined.publishedAt) }],
+        keyword: kws,
+        search: kws.join(" "),
+        position: kws.join(" "),
+        location: refined.location,
+        publishedAt: refined.publishedAt,
+        saveOnlyUniqueItems: refined.saveOnlyUniqueItems,
+      };
+    }
 
     const sourceId = await ensureLinkedinSource();
 
@@ -155,7 +312,7 @@ Deno.serve(async (req: Request) => {
     const items = await fetchDatasetItems(defaultDatasetId);
     await upsertIngestedJobs(sourceId, items);
 
-    return new Response(JSON.stringify({ status, defaultDatasetId, count: items.length, items }), {
+    return new Response(JSON.stringify({ status, defaultDatasetId, count: items.length, items, refinedInput: input, refineStatus }), {
       status: 200,
       headers: { "Content-Type": "application/json", ...corsHeaders },
     });

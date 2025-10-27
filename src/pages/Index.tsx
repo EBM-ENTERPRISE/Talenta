@@ -51,23 +51,13 @@ const Index = () => {
     setShowResults(true);
     setLoadingResults(true);
     try {
-      const input = {
-        startUrls: [
-          { url: "https://www.linkedin.com/jobs/search/?f_TPR=r604800&geoId=100025096&keywords=data+scientist" },
-        ],
-        keyword: [prompt.trim()],
-        location: "Montreal, Canada",
-        publishedAt: "r86400",
-        saveOnlyUniqueItems: false,
-      };
-
       const { data, error } = await supabase.functions.invoke<{
         status: string;
         defaultDatasetId: string | null;
         count: number;
         items: RawJobItem[];
       }>("scrape-linkedin-jobs", {
-        body: input,
+        body: { prompt },
       });
       if (error) {
         console.error("[Index] scrape error", error);
