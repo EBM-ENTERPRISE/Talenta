@@ -3,68 +3,72 @@ import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Loader2, MapPin, Briefcase, Star } from "lucide-react";
 
-interface Result {
-  id: number;
-  name: string;
-  title: string;
-  location: string;
-  experience: string;
-  skills: string[];
-  matchScore: number;
+interface JobResult {
+  title?: string;
+  companyName?: string;
+  location?: string;
+  description?: string;
+  applyUrl?: string;
+  postedAt?: string;
 }
 
-const mockResults: Result[] = [
-  {
-    id: 1,
-    name: "Maria Silva",
-    title: "Senior Frontend Developer",
-    location: "Lisboa, Portugal",
-    experience: "5+ anos",
-    skills: ["React", "TypeScript", "Tailwind CSS", "Node.js"],
-    matchScore: 95,
-  },
-  {
-    id: 2,
-    name: "João Santos",
-    title: "Full Stack Developer",
-    location: "Porto, Portugal",
-    experience: "3 anos",
-    skills: ["React", "Python", "PostgreSQL", "AWS"],
-    matchScore: 88,
-  },
-  {
-    id: 3,
-    name: "Ana Costa",
-    title: "Frontend Engineer",
-    location: "Braga, Portugal",
-    experience: "4 anos",
-    skills: ["Vue.js", "JavaScript", "CSS", "Firebase"],
-    matchScore: 82,
-  },
-];
+type RawJobItem = {
+  title?: string;
+  position?: string;
+  companyName?: string;
+  company?: string;
+  location?: string;
+  city?: string;
+  description?: string;
+  snippet?: string;
+  applyUrl?: string;
+  url?: string;
+  link?: string;
+  postedAt?: string;
+  datePosted?: string;
+};
 
-const ResultsPanel = () => {
-  const [loading, setLoading] = useState(true);
-  const [results, setResults] = useState<Result[]>([]);
+const ResultsPanel = ({ results = [], loading = false }: { results?: RawJobItem[]; loading?: boolean }) => {
+  const [internalResults, setInternalResults] = useState<JobResult[]>([]);
 
   useEffect(() => {
-    const timer = setTimeout(() => {
-      setLoading(false);
-      setResults(mockResults);
-    }, 6000);
-
-    return () => clearTimeout(timer);
-  }, []);
+    if (Array.isArray(results) && results.length > 0) {
+      const mapped = results.map((item: RawJobItem) => ({
+        title: item.title ?? item.position ?? "Vaga",
+        companyName: item.companyName ?? item.company ?? "Empresa",
+        location: item.location ?? item.city ?? "Localização não informada",
+        description: item.description ?? item.snippet ?? "",
+        applyUrl: item.applyUrl ?? item.url ?? item.link ?? "#",
+        postedAt: item.postedAt ?? item.datePosted ?? "",
+      }));
+      setInternalResults(mapped);
+    } else {
+      setInternalResults([]);
+    }
+  }, [results]);
 
   if (loading) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center p-8">
         <Loader2 className="h-12 w-12 animate-spin text-primary mb-4" />
         <h3 className="text-xl font-semibold text-foreground mb-2">
-          A procurar os melhores profissionais...
+          A procurar vagas no LinkedIn...
         </h3>
         <p className="text-foreground/60 text-center max-w-md">
-          Estamos a analisar milhares de perfis no LinkedIn para encontrar as melhores correspondências.
+          Estamos a varrer as vagas e preparar os resultados.
+        </p>
+      </div>
+    );
+  }
+
+  if (internalResults.length === 0) {
+    return (
+      <div className="flex-1 flex flex-col items-center justify-center p-8">
+        <h3 className="text-xl font-semibold text-foreground mb-2">
+          Sem resultados ainda
+        </h3>
+        <p className="text-foreground/60 text-center max-w-md">
+          Tente ajustar palavras-chave ou localização.
         </p>
       </div>
     );
@@ -75,7 +79,7 @@ const ResultsPanel = () => {
       <div className="max-w-4xl mx-auto">
         <div className="mb-6">
           <h2 className="text-2xl font-bold text-foreground mb-2">
-            {results.length} Profissionais Encontrados
+            {internalResults.length} Vagas Encontradas
           </h2>
           <p className="text-foreground/70">
             Resultados ordenados por relevância
@@ -83,50 +87,55 @@ const ResultsPanel = () => {
         </div>
 
         <div className="space-y-4">
-          {results.map((result, index) => (
+          {internalResults.map((job, index) => (
             <Card
-              key={result.id}
+              key={`${job.title}-${job.companyName}-${index}`}
               className="p-6 hover:shadow-lg transition-all duration-300 animate-fade-in border-border/40"
               style={{ animationDelay: `${index * 100}ms` }}
             >
               <div className="flex items-start justify-between mb-4">
                 <div className="flex-1">
                   <h3 className="text-xl font-semibold text-foreground mb-1">
-                    {result.name}
+                    {job.title}
                   </h3>
-                  <p className="text-foreground/80 mb-2">{result.title}</p>
+                  <p className="text-foreground/80 mb-2">{job.companyName}</p>
                   
                   <div className="flex items-center gap-4 text-sm text-foreground/60">
                     <span className="flex items-center gap-1">
                       <MapPin className="h-4 w-4" />
-                      {result.location}
+                      {job.location}
                     </span>
-                    <span className="flex items-center gap-1">
-                      <Briefcase className="h-4 w-4" />
-                      {result.experience}
-                    </span>
+                    {job.postedAt && (
+                      <span className="flex items-center gap-1">
+                        <Briefcase className="h-4 w-4" />
+                        Publicada: {job.postedAt}
+                      </span>
+                    )}
                   </div>
                 </div>
 
                 <div className="flex items-center gap-2 bg-primary/10 px-3 py-2 rounded-full">
                   <Star className="h-4 w-4 text-primary fill-primary" />
                   <span className="font-semibold text-primary">
-                    {result.matchScore}%
+                    90%
                   </span>
                 </div>
               </div>
 
-              <div className="flex flex-wrap gap-2">
-                {result.skills.map((skill) => (
-                  <Badge
-                    key={skill}
-                    variant="secondary"
-                    className="bg-secondary/50"
-                  >
-                    {skill}
-                  </Badge>
-                ))}
-              </div>
+              {job.description && (
+                <p className="text-foreground/70 mb-3 line-clamp-4">{job.description}</p>
+              )}
+
+              {job.applyUrl && (
+                <a
+                  href={job.applyUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-primary hover:underline text-sm"
+                >
+                  Candidatar-se
+                </a>
+              )}
             </Card>
           ))}
         </div>

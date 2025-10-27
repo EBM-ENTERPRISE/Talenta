@@ -641,3 +641,15 @@ const Auth = () => {
 };
 
 export default Auth;
+
+async function handleMagicLinkLogin(email: string) {
+  const { error } = await supabase.auth.signInWithOtp({
+    email,
+    options: { shouldCreateUser: true }
+  });
+  if (error) {
+    console.error('Falha no login por email:', error.message);
+    return;
+  }
+  // Sucesso: verifique o email para completar o login
+}

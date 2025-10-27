@@ -8,10 +8,28 @@ import ThoughtsPanel from "@/components/ThoughtsPanel";
 import ResultsPanel from "@/components/ResultsPanel";
 import { supabase } from "@/lib/utils";
 
+type RawJobItem = {
+  title?: string;
+  position?: string;
+  companyName?: string;
+  company?: string;
+  location?: string;
+  city?: string;
+  description?: string;
+  snippet?: string;
+  applyUrl?: string;
+  url?: string;
+  link?: string;
+  postedAt?: string;
+  datePosted?: string;
+};
+
 const Index = () => {
   const [showResults, setShowResults] = useState(false);
   const [currentPrompt, setCurrentPrompt] = useState("");
   const [sessionEmail, setSessionEmail] = useState<string | null>(null);
+  const [results, setResults] = useState<RawJobItem[]>([]);
+  const [loadingResults, setLoadingResults] = useState(false);
 
   useEffect(() => {
     const { data: sub } = supabase.auth.onAuthStateChange((event, session) => {
@@ -28,9 +46,42 @@ const Index = () => {
     };
   }, []);
 
-  const handleSubmit = (prompt: string) => {
+  const handleSubmit = async (prompt: string) => {
     setCurrentPrompt(prompt);
     setShowResults(true);
+    setLoadingResults(true);
+    try {
+      const input = {
+        startUrls: [
+          { url: "https://www.linkedin.com/jobs/search/?f_TPR=r604800&geoId=100025096&keywords=data+scientist" },
+        ],
+        keyword: [prompt.trim()],
+        location: "Montreal, Canada",
+        publishedAt: "r86400",
+        saveOnlyUniqueItems: false,
+      };
+
+      const { data, error } = await supabase.functions.invoke<{
+        status: string;
+        defaultDatasetId: string | null;
+        count: number;
+        items: RawJobItem[];
+      }>("scrape-linkedin-jobs", {
+        body: input,
+      });
+      if (error) {
+        console.error("[Index] scrape error", error);
+        setResults([]);
+      } else {
+        console.log("[Index] scrape success", { count: data?.count });
+        setResults(Array.isArray(data?.items) ? data.items : []);
+      }
+    } catch (err) {
+      console.error("[Index] scrape exception", err);
+      setResults([]);
+    } finally {
+      setLoadingResults(false);
+    }
   };
 
   const handleNewPrompt = (prompt: string) => {
@@ -86,7 +137,7 @@ const Index = () => {
         {/* Results View */}
         <div className="flex-1 flex overflow-hidden">
           <ThoughtsPanel onNewPrompt={handleNewPrompt} />
-          <ResultsPanel />
+          <ResultsPanel results={results} loading={loadingResults} />
         </div>
       </div>
     );
