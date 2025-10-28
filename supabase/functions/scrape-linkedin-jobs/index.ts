@@ -51,12 +51,14 @@ const APIFY_TOKEN = Deno.env.get("APIFY_API_TOKEN");
 const ACTOR_ID = Deno.env.get("APIFY_API_ATOR") || "2rJKkhh7vjpX7pvjg";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE") || Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY");
 const GROQ_API_KEY = Deno.env.get("GROQ_API_KEY");
 
 if (!APIFY_TOKEN) console.error("[scrape-linkedin-jobs] Missing APIFY_API_TOKEN secret");
 if (!SUPABASE_URL) console.error("[scrape-linkedin-jobs] Missing SUPABASE_URL secret");
 if (!SUPABASE_SERVICE_ROLE_KEY) console.error("[scrape-linkedin-jobs] Missing SUPABASE_SERVICE_ROLE key");
 if (!GROQ_API_KEY) console.warn("[scrape-linkedin-jobs] Missing GROQ_API_KEY; prompt refinement will be skipped");
+if (!SUPABASE_ANON_KEY) console.warn("[scrape-linkedin-jobs] Missing SUPABASE_ANON_KEY; authenticated logging will be disabled");
 
 const supabase = createClient(String(SUPABASE_URL), String(SUPABASE_SERVICE_ROLE_KEY));
 
@@ -124,6 +126,120 @@ function extractRoleFromPrompt(prompt: string): string | undefined {
     if (m && m[1]) return m[1].trim();
   }
   return undefined;
+}
+
+function normalizeJobItem(item: ApifyJobItem): ApifyJobItem {
+  const isGeneric = (t?: string) => {
+    const s = (t || '').trim().toLowerCase();
+    return !s || s === 'vaga' || s.length <= 3;
+  };
+  const pickTitle = () => {
+    if (!isGeneric(item.title)) return item.title as string;
+    const jt = (item as Record<string, unknown>)['jobTitle'];
+    if (typeof jt === 'string' && !isGeneric(jt)) return jt;
+    if (!isGeneric(item.position)) return item.position as string;
+    // tenta primeira linha da descrição
+    const desc = String(item.description || item.snippet || '').trim();
+    const firstLine = desc.split(/\n|\.\s/)[0];
+    if (firstLine && !isGeneric(firstLine)) return firstLine;
+    return item.title || item.position || 'Vaga';
+  };
+  // de-dup de localização tipo "Lisboa, Lisbon, Portugal"
+  const normalizedLocation = (() => {
+    const loc = String(item.location || '').trim();
+    if (!loc) return item.location;
+    // remove duplicatas de cidade em PT/EN
+    const parts = loc.split(',').map(p => p.trim());
+    const seen = new Set<string>();
+    const filtered = parts.filter(p => {
+      const key = p.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    return filtered.join(', ');
+  })();
+
+  return {
+    ...item,
+    title: pickTitle(),
+    location: normalizedLocation,
+  };
+}
+
+async function fetchWithTimeout(url: string, ms = 3000): Promise<Response | null> {
+  const ctrl = new AbortController();
+  const id = setTimeout(() => ctrl.abort(), ms);
+  try {
+    const res = await fetch(url, { signal: ctrl.signal });
+    clearTimeout(id);
+    return res;
+  } catch {
+    clearTimeout(id);
+    return null;
+  }
+}
+
+function cleanTitleText(txt: string): string {
+  let t = txt.trim();
+  // remove sufixos comuns
+  t = t.replace(/\s*[|\-–—]\s*[^|\-–—]+$/u, '').trim();
+  t = t.replace(/\s*\([^)]*\)\s*$/, '').trim();
+  // colapsa espaços
+  t = t.replace(/\s+/g, ' ');
+  return t;
+}
+
+function extractTitleFromHtml(html: string): string | null {
+  const og = html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["'][^>]*>/i);
+  if (og && og[1]) {
+    const t = cleanTitleText(og[1]);
+    if (t && t.length > 3) return t;
+  }
+  const mt = html.match(/<meta[^>]+name=["']title["'][^>]+content=["']([^"']+)["'][^>]*>/i);
+  if (mt && mt[1]) {
+    const t = cleanTitleText(mt[1]);
+    if (t && t.length > 3) return t;
+  }
+  const h1 = html.match(/<h1[^>]*>([^<]+)<\/h1>/i);
+  if (h1 && h1[1]) {
+    const t = cleanTitleText(h1[1]);
+    if (t && t.length > 3) return t;
+  }
+  const h2 = html.match(/<h2[^>]*>([^<]+)<\/h2>/i);
+  if (h2 && h2[1]) {
+    const t = cleanTitleText(h2[1]);
+    if (t && t.length > 3) return t;
+  }
+  const ti = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+  if (ti && ti[1]) {
+    const t = cleanTitleText(ti[1]);
+    if (t && t.length > 3) return t;
+  }
+  return null;
+}
+
+async function enrichGenericTitles(items: ApifyJobItem[], max = 5): Promise<ApifyJobItem[]> {
+  const isGeneric = (t?: string) => {
+    const s = (t || '').trim().toLowerCase();
+    return !s || s === 'vaga' || s.length <= 3;
+  };
+  let count = 0;
+  for (let i = 0; i < items.length && count < max; i++) {
+    const it = items[i];
+    if (!isGeneric(it.title)) continue;
+    const url = String(it.applyUrl || it.url || it.link || '').trim();
+    if (!url) continue;
+    const res = await fetchWithTimeout(url, 3000);
+    if (!res || !res.ok) continue;
+    const html = await res.text();
+    const t = extractTitleFromHtml(html);
+    if (t && !isGeneric(t)) {
+      it.title = t;
+      count++;
+    }
+  }
+  return items;
 }
 
 function normalizeKeywords(keywords: string[] | undefined, prompt: string): string[] {
@@ -244,8 +360,9 @@ async function ensureLinkedinSource() {
   return inserted.id as number;
 }
 
-async function upsertIngestedJobs(sourceId: number, items: ApifyJobItem[]) {
+async function upsertIngestedJobs(sourceId: number, items: ApifyJobItem[]): Promise<string[]> {
   const rows = items.map((item: ApifyJobItem) => ({
+    id: crypto.randomUUID(),
     external_id: item.id ?? item.jobId ?? item.url ?? item.link ?? null,
     source_id: sourceId,
     raw: item,
@@ -256,6 +373,7 @@ async function upsertIngestedJobs(sourceId: number, items: ApifyJobItem[]) {
     const { error } = await supabase.from("ingested_jobs").upsert(chunk);
     if (error) console.error("[scrape-linkedin-jobs] upsert chunk error", error);
   }
+  return rows.map(r => r.id as string);
 }
 
 Deno.serve(async (req: Request) => {
@@ -291,10 +409,47 @@ Deno.serve(async (req: Request) => {
       };
     }
 
+    // Insert search row for authenticated users (RLS enforced via anon token)
+    let searchId: string | null = null;
+    const authed = getAuthedClient(req);
+    if (authed && (incoming.prompt || input.search)) {
+      const { data: userRes } = await authed.auth.getUser();
+      const userId = userRes?.user?.id;
+      if (userId) {
+        const constraints = {
+          refinedInput: input,
+          refineStatus,
+        } as Record<string, unknown>;
+        const { data: inserted, error: insertErr } = await authed
+          .from("searches")
+          .insert({
+            user_id: userId,
+            target: "job",
+            prompt: incoming.prompt ?? input.search ?? "",
+            constraints,
+            status: "running",
+          })
+          .select("id")
+          .single();
+        if (insertErr) {
+          console.warn("[scrape-linkedin-jobs] failed to insert search", insertErr.message);
+        } else {
+          searchId = inserted?.id ?? null;
+        }
+      }
+    }
+
     const sourceId = await ensureLinkedinSource();
 
     const run = await startActorRun(input);
     if (!run?.id) {
+      // mark search as failed if applicable
+      if (authed && searchId) {
+        await authed
+          .from("searches")
+          .update({ status: "failed", constraints: { refinedInput: input, refineStatus, error: "Falha ao iniciar Actor", runDetail: run } })
+          .eq("id", searchId);
+      }
       return new Response(JSON.stringify({ error: "Falha ao iniciar Actor", detail: run }), {
         status: 500,
         headers: { "Content-Type": "application/json" },
@@ -303,6 +458,12 @@ Deno.serve(async (req: Request) => {
 
     const { status, defaultDatasetId } = await pollRun(run.id);
     if (status !== "SUCCEEDED" || !defaultDatasetId) {
+      if (authed && searchId) {
+        await authed
+          .from("searches")
+          .update({ status: "failed", constraints: { refinedInput: input, refineStatus, status, defaultDatasetId } })
+          .eq("id", searchId);
+      }
       return new Response(
         JSON.stringify({ error: "Run não concluído com sucesso", status, defaultDatasetId }),
         { status: 500, headers: { "Content-Type": "application/json" } }
@@ -310,9 +471,36 @@ Deno.serve(async (req: Request) => {
     }
 
     const items = await fetchDatasetItems(defaultDatasetId);
-    await upsertIngestedJobs(sourceId, items);
+    const normalizedItems = items.map(normalizeJobItem);
+    await enrichGenericTitles(normalizedItems, 5);
+    const ingestedIds = await upsertIngestedJobs(sourceId, normalizedItems);
 
-    return new Response(JSON.stringify({ status, defaultDatasetId, count: items.length, items, refinedInput: input, refineStatus }), {
+    // Se houver busca autenticada, salva resultados vinculando ao item ingerido
+    if (searchId) {
+      const resultsRows = normalizedItems.map((item, idx) => ({
+        search_id: searchId,
+        target_type: 'job',
+        target_id: ingestedIds[idx],
+        rank: idx + 1,
+        data: item,
+      }));
+      const chunkSize = 200;
+      for (let i = 0; i < resultsRows.length; i += chunkSize) {
+        const chunk = resultsRows.slice(i, i + chunkSize);
+        const { error } = await supabase.from('search_results').upsert(chunk);
+        if (error) console.error('[scrape-linkedin-jobs] insert search_results error', error);
+      }
+    }
+
+    // update search status to done with metadata
+    if (authed && searchId) {
+      await authed
+        .from("searches")
+        .update({ status: "done", constraints: { refinedInput: input, refineStatus, defaultDatasetId, count: normalizedItems.length } })
+        .eq("id", searchId);
+    }
+
+    return new Response(JSON.stringify({ status, defaultDatasetId, count: normalizedItems.length, items: normalizedItems, refinedInput: input, refineStatus, searchId }), {
       status: 200,
       headers: { "Content-Type": "application/json", ...corsHeaders },
     });
@@ -325,3 +513,10 @@ Deno.serve(async (req: Request) => {
     });
   }
 });
+function getAuthedClient(req: Request) {
+  const auth = req.headers.get("Authorization");
+  if (!auth || !SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
+  return createClient(String(SUPABASE_URL), String(SUPABASE_ANON_KEY), {
+    global: { headers: { Authorization: auth } },
+  });
+}

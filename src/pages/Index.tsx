@@ -6,6 +6,7 @@ import SearchInput from "@/components/SearchInput";
 import ActionButtons from "@/components/ActionButtons";
 import ThoughtsPanel from "@/components/ThoughtsPanel";
 import ResultsPanel from "@/components/ResultsPanel";
+import SearchSidebar from "@/components/SearchSidebar";
 import { supabase } from "@/lib/utils";
 
 type RawJobItem = {
@@ -22,6 +23,15 @@ type RawJobItem = {
   link?: string;
   postedAt?: string;
   datePosted?: string;
+};
+
+type SearchResult = {
+  id: string;
+  search_id: string;
+  target_type: string;
+  target_id: string;
+  rank: number;
+  data: Record<string, unknown>;
 };
 
 const Index = () => {
@@ -79,6 +89,34 @@ const Index = () => {
     // Here you would trigger a new search with the updated prompt
   };
 
+  const handleSearchSelect = (prompt: string) => {
+    handleSubmit(prompt);
+  };
+
+  const handleResultsSelect = (searchId: string, results: SearchResult[]) => {
+    console.log('[Index] handleResultsSelect called', { searchId, count: results.length });
+    console.log('[Index] Raw results:', results);
+    
+    // Convert saved results to the expected format
+    const jobItems: RawJobItem[] = results.map(result => {
+      console.log('[Index] Processing result:', result);
+      const data = result.data as RawJobItem;
+      return data;
+    });
+    
+    console.log('[Index] Converted job items:', jobItems);
+    
+    // Set the results without making a new API call
+    setResults(jobItems);
+    setShowResults(true);
+    setLoadingResults(false);
+    
+    // Set a generic prompt for display purposes
+    setCurrentPrompt("Resultados salvos");
+    
+    console.log('[Index] State updated - showResults: true, results count:', jobItems.length);
+  };
+
   const handleBack = () => {
     setShowResults(false);
     setCurrentPrompt("");
@@ -97,6 +135,9 @@ const Index = () => {
             >
               ← Voltar
             </Button>
+            {sessionEmail && (
+              <SearchSidebar onSearchSelect={handleSearchSelect} onResultsSelect={handleResultsSelect} />
+            )}
             <TalentaLogo />
           </div>
           <div className="flex items-center gap-3">
@@ -137,7 +178,12 @@ const Index = () => {
     <div className="min-h-screen flex flex-col">
       {/* Header */}
       <header className="w-full px-6 py-6 flex items-center justify-between max-w-7xl mx-auto">
-        <TalentaLogo />
+        <div className="flex items-center gap-4">
+          {sessionEmail && (
+            <SearchSidebar onSearchSelect={handleSearchSelect} onResultsSelect={handleResultsSelect} />
+          )}
+          <TalentaLogo />
+        </div>
         <div className="flex items-center gap-3">
           {sessionEmail ? (
             <>
