@@ -14,9 +14,23 @@ type SearchResult = {
   data: Record<string, unknown>;
 };
 
+type SearchRecord = {
+  id: string;
+  prompt: string;
+  status: 'pending' | 'running' | 'done' | 'failed';
+  created_at: string;
+  constraints?: {
+    count?: number;
+    refinedInput?: {
+      keyword?: string[];
+      location?: string;
+    };
+  };
+};
+
 interface SearchSidebarProps {
   onSearchSelect?: (prompt: string) => void;
-  onResultsSelect?: (searchId: string, results: SearchResult[]) => void;
+  onResultsSelect?: (search: SearchRecord, results: SearchResult[]) => void;
 }
 
 const SearchSidebar = ({ onSearchSelect, onResultsSelect }: SearchSidebarProps) => {
@@ -30,8 +44,8 @@ const SearchSidebar = ({ onSearchSelect, onResultsSelect }: SearchSidebarProps) 
     }
   };
 
-  const handleResultsSelect = (searchId: string, results: SearchResult[]) => {
-    onResultsSelect?.(searchId, results);
+  const handleResultsSelect = (search: SearchRecord, results: SearchResult[]) => {
+    onResultsSelect?.(search, results);
     if (isMobile) {
       setIsOpen(false);
     }

@@ -2,6 +2,8 @@ import { useState, useEffect } from "react";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Loader2, MapPin, Briefcase, Star } from "lucide-react";
+import type { SearchConstraints } from '@/lib/applyCspToResults';
+import type { CspEval } from '@/lib/applyCspToResults';
 
 interface JobResult {
   title?: string;
@@ -28,8 +30,10 @@ type RawJobItem = {
   datePosted?: string;
 };
 
-const ResultsPanel = ({ results = [], loading = false }: { results?: RawJobItem[]; loading?: boolean }) => {
+const ResultsPanel = ({ results = [], loading = false, constraints, evaluations }: { results?: RawJobItem[]; loading?: boolean; constraints?: SearchConstraints; evaluations?: CspEval[] }) => {
   const [internalResults, setInternalResults] = useState<JobResult[]>([]);
+  const [page, setPage] = useState(1);
+  const pageSize = 10;
 
   useEffect(() => {
     if (Array.isArray(results) && results.length > 0) {
@@ -45,7 +49,15 @@ const ResultsPanel = ({ results = [], loading = false }: { results?: RawJobItem[
     } else {
       setInternalResults([]);
     }
+    setPage(1); // reset to first page when results change
   }, [results]);
+
+  const total = internalResults.length;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const start = (page - 1) * pageSize;
+  const end = start + pageSize;
+  const pageResults = internalResults.slice(start, end);
+  const pageEvaluations = evaluations?.slice(start, end) || [];
 
   if (loading) {
     return (
@@ -82,12 +94,30 @@ const ResultsPanel = ({ results = [], loading = false }: { results?: RawJobItem[
             {internalResults.length} Vagas Encontradas
           </h2>
           <p className="text-foreground/70">
-            Resultados ordenados por relevância
+            Resultados ordenados por proximidade
           </p>
+          {constraints && (
+            <div className="flex flex-wrap gap-2 mt-3">
+              {constraints.refinedInput?.location && (
+                <Badge variant="secondary">Localização: {constraints.refinedInput.location}</Badge>
+              )}
+              {(() => {
+                const kws = (constraints.keywords && constraints.keywords.length > 0)
+                  ? constraints.keywords
+                  : (constraints.refinedInput?.keyword || []);
+                return Array.isArray(kws) && kws.length > 0 ? (
+                  <Badge variant="secondary">Palavras-chave: {kws.join(', ')}</Badge>
+                ) : null;
+              })()}
+              {Array.isArray(constraints.mustHaveSkills) && constraints.mustHaveSkills!.length > 0 && (
+                <Badge variant="secondary">Competências: {constraints.mustHaveSkills!.join(', ')}</Badge>
+              )}
+            </div>
+          )}
         </div>
 
         <div className="space-y-4">
-          {internalResults.map((job, index) => (
+          {pageResults.map((job, index) => (
             <Card
               key={`${job.title}-${job.companyName}-${index}`}
               className="p-6 hover:shadow-lg transition-all duration-300 animate-fade-in border-border/40"
@@ -114,16 +144,24 @@ const ResultsPanel = ({ results = [], loading = false }: { results?: RawJobItem[
                   </div>
                 </div>
 
-                <div className="flex items-center gap-2 bg-primary/10 px-3 py-2 rounded-full">
-                  <Star className="h-4 w-4 text-primary fill-primary" />
-                  <span className="font-semibold text-primary">
-                    90%
-                  </span>
-                </div>
+                 <div className="flex items-center gap-2 bg-primary/10 px-3 py-2 rounded-full">
+                   <Star className="h-4 w-4 text-primary fill-primary" />
+                   <span className="font-semibold text-primary">
+                    {pageEvaluations?.[index]?.score ?? 100}%
+                   </span>
+                 </div>
               </div>
 
               {job.description && (
                 <p className="text-foreground/70 mb-3 line-clamp-4">{job.description}</p>
+              )}
+
+              {pageEvaluations && pageEvaluations[index] && pageEvaluations[index].violated.length > 0 && (
+                <div className="flex flex-wrap gap-2 mb-3">
+                  {pageEvaluations[index].violated.map((label, i) => (
+                    <Badge key={i} variant="destructive" className="text-xs">Falha: {label}</Badge>
+                  ))}
+                </div>
               )}
 
               {job.applyUrl && (
@@ -139,6 +177,27 @@ const ResultsPanel = ({ results = [], loading = false }: { results?: RawJobItem[
             </Card>
           ))}
         </div>
+
+        {/* Pagination Controls */}
+        {totalPages > 1 && (
+          <div className="flex items-center justify-center gap-2 mt-6">
+            <button
+              className="px-3 py-1 rounded border border-border text-sm disabled:opacity-50"
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={page <= 1}
+            >
+              Anterior
+            </button>
+            <span className="text-sm text-muted-foreground">Página {page} de {totalPages}</span>
+            <button
+              className="px-3 py-1 rounded border border-border text-sm disabled:opacity-50"
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              disabled={page >= totalPages}
+            >
+              Próxima
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

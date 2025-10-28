@@ -8,6 +8,7 @@ import ThoughtsPanel from "@/components/ThoughtsPanel";
 import ResultsPanel from "@/components/ResultsPanel";
 import SearchSidebar from "@/components/SearchSidebar";
 import { supabase } from "@/lib/utils";
+import { filterByConstraints, type SearchConstraints, type CspEval } from "@/lib/applyCspToResults";
 
 type RawJobItem = {
   title?: string;
@@ -32,6 +33,20 @@ type SearchResult = {
   target_id: string;
   rank: number;
   data: Record<string, unknown>;
+};
+
+type SearchRecord = {
+  id: string;
+  prompt: string;
+  status: "pending" | "running" | "done" | "failed";
+  created_at: string;
+  constraints?: {
+    count?: number;
+    refinedInput?: {
+      keyword?: string[];
+      location?: string;
+    };
+  };
 };
 
 const Index = () => {
@@ -93,27 +108,37 @@ const Index = () => {
     handleSubmit(prompt);
   };
 
-  const handleResultsSelect = (searchId: string, results: SearchResult[]) => {
-    console.log('[Index] handleResultsSelect called', { searchId, count: results.length });
+  const [constraints, setConstraints] = useState<SearchConstraints | null>(null);
+  const [evaluations, setEvaluations] = useState<CspEval[] | null>(null);
+
+  const handleResultsSelect = (search: SearchRecord, results: SearchResult[]) => {
+    console.log('[Index] handleResultsSelect called', { searchId: search.id, count: results.length, constraints: search.constraints });
     console.log('[Index] Raw results:', results);
-    
+
     // Convert saved results to the expected format
     const jobItems: RawJobItem[] = results.map(result => {
-      console.log('[Index] Processing result:', result);
       const data = result.data as RawJobItem;
       return data;
     });
-    
-    console.log('[Index] Converted job items:', jobItems);
-    
-    // Set the results without making a new API call
-    setResults(jobItems);
+
+    // Apply CSP evaluation (non-filtering, just scoring/explanations)
+    const currentConstraints: SearchConstraints | null = search.constraints || null;
+    const outcome = filterByConstraints(jobItems, currentConstraints);
+
+    // Sort by CSP score descending to show closest matches first
+    const combined = outcome.items.map((item, idx) => ({ item, eval: outcome.evaluations[idx] }));
+    combined.sort((a, b) => (b.eval?.score ?? 0) - (a.eval?.score ?? 0));
+
+    // Update state with sorted results
+    setConstraints(currentConstraints);
+    setEvaluations(combined.map((c) => c.eval));
+    setResults(combined.map((c) => c.item));
     setShowResults(true);
     setLoadingResults(false);
-    
-    // Set a generic prompt for display purposes
-    setCurrentPrompt("Resultados salvos");
-    
+
+    // Use the actual prompt from the saved search for display/editing
+    setCurrentPrompt(search.prompt);
+
     console.log('[Index] State updated - showResults: true, results count:', jobItems.length);
   };
 
@@ -167,8 +192,8 @@ const Index = () => {
 
         {/* Results View */}
         <div className="flex-1 flex overflow-hidden">
-          <ThoughtsPanel onNewPrompt={handleNewPrompt} />
-          <ResultsPanel results={results} loading={loadingResults} />
+          <ThoughtsPanel onNewPrompt={handleNewPrompt} initialPrompt={currentPrompt} />
+          <ResultsPanel results={results} loading={loadingResults} constraints={constraints || undefined} evaluations={evaluations || undefined} />
         </div>
       </div>
     );

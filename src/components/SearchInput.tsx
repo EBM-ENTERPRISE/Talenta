@@ -1,14 +1,19 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Paperclip, Mic, ArrowUp, Globe } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 
 interface SearchInputProps {
   onSubmit: (prompt: string) => void;
+  initialPrompt?: string;
 }
 
-const SearchInput = ({ onSubmit }: SearchInputProps) => {
-  const [prompt, setPrompt] = useState("");
+const SearchInput = ({ onSubmit, initialPrompt }: SearchInputProps) => {
+  const [prompt, setPrompt] = useState(initialPrompt ?? "");
+
+  useEffect(() => {
+    setPrompt(initialPrompt ?? "");
+  }, [initialPrompt]);
 
   const handleSubmit = () => {
     if (prompt.trim()) {

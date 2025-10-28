@@ -30,7 +30,7 @@ type SearchResult = {
 
 interface SearchHistoryProps {
   onSearchSelect?: (prompt: string) => void;
-  onResultsSelect?: (searchId: string, results: SearchResult[]) => void;
+  onResultsSelect?: (search: SearchRecord, results: SearchResult[]) => void;
 }
 
 const SearchHistory = ({ onSearchSelect, onResultsSelect }: SearchHistoryProps) => {
@@ -112,7 +112,7 @@ const SearchHistory = ({ onSearchSelect, onResultsSelect }: SearchHistoryProps) 
       if (data && data.length > 0) {
         if (onResultsSelect) {
           console.log('[SearchHistory] Calling onResultsSelect with', data.length, 'results');
-          onResultsSelect(search.id, data);
+          onResultsSelect(search, data);
         }
       } else {
         console.log('[SearchHistory] No saved results found, falling back to new search');

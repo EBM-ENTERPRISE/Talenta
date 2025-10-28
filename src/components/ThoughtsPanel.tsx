@@ -10,9 +10,10 @@ interface ThoughtStep {
 
 interface ThoughtsPanelProps {
   onNewPrompt?: (prompt: string) => void;
+  initialPrompt?: string;
 }
 
-const ThoughtsPanel = ({ onNewPrompt }: ThoughtsPanelProps) => {
+const ThoughtsPanel = ({ onNewPrompt, initialPrompt }: ThoughtsPanelProps) => {
   const [steps, setSteps] = useState<ThoughtStep[]>([]);
 
   useEffect(() => {
@@ -83,7 +84,7 @@ const ThoughtsPanel = ({ onNewPrompt }: ThoughtsPanelProps) => {
         <p className="text-xs text-foreground/60 mb-3 uppercase tracking-wide">
           Ajustar pesquisa
         </p>
-        <SearchInput onSubmit={onNewPrompt || (() => {})} />
+        <SearchInput onSubmit={onNewPrompt || (() => {})} initialPrompt={initialPrompt} />
       </div>
     </div>
   );
