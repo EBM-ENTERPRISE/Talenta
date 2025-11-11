@@ -47,17 +47,24 @@ type ApifyJobItem = {
   [key: string]: unknown;
 };
 
+// Tipo mínimo para resposta de Chat Completions da OpenAI que usamos
+type OpenAIChatCompletion = {
+  choices?: Array<{ message?: { content?: string } }>;
+  error?: { message?: string; type?: string; code?: string };
+};
+
 const APIFY_TOKEN = Deno.env.get("APIFY_API_TOKEN");
-const ACTOR_ID = Deno.env.get("APIFY_API_ATOR") || "2rJKkhh7vjpX7pvjg";
+// Support both correct and legacy env var names for the Apify Actor ID
+const ACTOR_ID = Deno.env.get("APIFY_API_ACTOR") || Deno.env.get("APIFY_API_ATOR") || "2rJKkhh7vjpX7pvjg";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE") || Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
 const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY");
-const GROQ_API_KEY = Deno.env.get("GROQ_API_KEY");
+const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY");
 
 if (!APIFY_TOKEN) console.error("[scrape-linkedin-jobs] Missing APIFY_API_TOKEN secret");
 if (!SUPABASE_URL) console.error("[scrape-linkedin-jobs] Missing SUPABASE_URL secret");
 if (!SUPABASE_SERVICE_ROLE_KEY) console.error("[scrape-linkedin-jobs] Missing SUPABASE_SERVICE_ROLE key");
-if (!GROQ_API_KEY) console.warn("[scrape-linkedin-jobs] Missing GROQ_API_KEY; prompt refinement will be skipped");
+if (!OPENAI_API_KEY) console.warn("[scrape-linkedin-jobs] Missing OPENAI_API_KEY; prompt refinement will be skipped");
 if (!SUPABASE_ANON_KEY) console.warn("[scrape-linkedin-jobs] Missing SUPABASE_ANON_KEY; authenticated logging will be disabled");
 
 const supabase = createClient(String(SUPABASE_URL), String(SUPABASE_SERVICE_ROLE_KEY));
@@ -75,8 +82,19 @@ async function startActorRun(input: ScrapeInput) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(input),
   });
-  const json = await resp.json();
-  return json?.data;
+  let json: unknown = null;
+  try {
+    json = await resp.json();
+  } catch (e) {
+    console.error("[startActorRun] Falha ao parsear resposta do Apify", e);
+  }
+  if (!resp.ok) {
+    console.error("[startActorRun] Apify start falhou", { status: resp.status, body: json });
+  } else {
+    console.log("[startActorRun] Apify start OK", { status: resp.status });
+  }
+  const data = (json as { data?: unknown })?.data as { id?: string } | undefined;
+  return data;
 }
 
 async function pollRun(actorRunId: string) {
@@ -107,6 +125,37 @@ function buildLinkedinUrl(keywords: string[], location?: string, publishedAt?: s
   if (location) params.set("location", location);
   if (publishedAt) params.set("f_TPR", publishedAt);
   return `https://www.linkedin.com/jobs/search/?${params.toString()}`;
+}
+
+function ensureStartUrls(
+  current: unknown,
+  keywords: string[],
+  location?: string,
+  publishedAt?: string,
+): { url: string }[] {
+  const defUrl = buildLinkedinUrl(keywords, location, publishedAt || "r604800");
+  // Array de strings
+  if (Array.isArray(current) && current.every(v => typeof v === 'string')) {
+    const arr = (current as string[]).filter(u => typeof u === 'string' && u.trim().length > 0).map(u => ({ url: String(u).trim() }));
+    return arr.length ? arr : [{ url: defUrl }];
+  }
+  // Array de objetos { url }
+  if (Array.isArray(current) && current.every(v => typeof v === 'object' && v != null)) {
+    const arr = (current as Array<{ url?: string }>).map(o => ({ url: String(o.url || '').trim() })).filter(o => o.url.length > 0);
+    return arr.length ? arr : [{ url: defUrl }];
+  }
+  // Objeto simples { url }
+  if (current && typeof current === 'object' && (current as { url?: string }).url) {
+    const u = String((current as { url?: string }).url || '').trim();
+    return u ? [{ url: u }] : [{ url: defUrl }];
+  }
+  // String simples
+  if (typeof current === 'string') {
+    const u = String(current).trim();
+    return u ? [{ url: u }] : [{ url: defUrl }];
+  }
+  // Fallback
+  return [{ url: defUrl }];
 }
 
 function detectLocationFromPrompt(prompt: string): string | undefined {
@@ -254,6 +303,8 @@ function normalizeKeywords(keywords: string[] | undefined, prompt: string): stri
     const t = String(k)
       .toLowerCase()
       .replace(/["'`]/g, "")
+      // evita termos com ponto que possam confundir sistemas de busca (ex.: node.js)
+      .replace(/\./g, " ")
       .replace(/\s+/g, " ")
       .trim();
     const words = t.split(" ").filter(w => !stop.has(w));
@@ -264,9 +315,10 @@ function normalizeKeywords(keywords: string[] | undefined, prompt: string): stri
   return unique.length ? unique : [prompt.trim()];
 }
 
-async function refinePromptWithGroq(prompt: string): Promise<RefineResponse> {
-  if (!GROQ_API_KEY) {
+async function refinePromptWithOpenAI(prompt: string): Promise<RefineResponse> {
+  if (!OPENAI_API_KEY) {
     // Fallback simples quando não há chave GROQ: extrai palavras por espaço e tenta detectar cidade após "em"
+    console.warn("[refinePromptWithOpenAI] OPENAI_API_KEY ausente; usando fallback simples");
     const location = detectLocationFromPrompt(prompt);
     const keywords = normalizeKeywords(undefined, prompt);
     const url = buildLinkedinUrl(keywords, location, "r604800");
@@ -288,24 +340,43 @@ Diretivas:
 - Remova palavras de enchimento (quero, vaga, em, para, de etc.).
 - keyword deve conter só o cargo (1–3 termos).`;
 
-  const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+  const resp = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${GROQ_API_KEY}`,
+      Authorization: `Bearer ${OPENAI_API_KEY}`,
     },
     body: JSON.stringify({
-      model: "groq/compound-mini",
+      model: "gpt-4o-mini",
       messages: [
         { role: "system", content: system },
         { role: "user", content: user },
       ],
       temperature: 0.2,
-      response_format: { type: "json_object" },
     }),
   });
-  const data = await resp.json();
-  const content: string = data?.choices?.[0]?.message?.content ?? "";
+  const t0 = Date.now();
+  console.log("[refinePromptWithOpenAI] chamada OpenAI enviada", { model: "gpt-4o-mini", promptChars: prompt.length });
+  let data: unknown;
+  try {
+    data = await resp.json();
+  } catch (e) {
+    console.error("[refinePromptWithOpenAI] falha ao ler JSON da OpenAI", e);
+    const location = detectLocationFromPrompt(prompt);
+    const keywords = normalizeKeywords(undefined, prompt);
+    const url = buildLinkedinUrl(keywords, location, "r604800");
+    return { keyword: keywords, location, publishedAt: "r604800", startUrls: [{ url }], saveOnlyUniqueItems: false };
+  }
+  console.log("[refinePromptWithOpenAI] resposta OpenAI", { ok: resp.ok, status: resp.status, durationMs: Date.now() - t0 });
+  if (!resp.ok) {
+    const errInfo = (data as OpenAIChatCompletion)?.error;
+    console.warn("[refinePromptWithOpenAI] OpenAI retornou status não-sucesso", { status: resp.status, error: errInfo });
+    const location = detectLocationFromPrompt(prompt);
+    const keywords = normalizeKeywords(undefined, prompt);
+    const url = buildLinkedinUrl(keywords, location, "r604800");
+    return { keyword: keywords, location, publishedAt: "r604800", startUrls: [{ url }], saveOnlyUniqueItems: false };
+  }
+  const content: string = ((data as OpenAIChatCompletion)?.choices?.[0]?.message?.content) ?? "";
   let parsed: RefineResponse | null = null;
   try {
     parsed = JSON.parse(content);
@@ -321,6 +392,7 @@ Diretivas:
     }
   }
   if (!parsed) {
+    console.warn("[refinePromptWithOpenAI] falha ao parsear conteúdo da OpenAI; usando fallback", { contentPreview: content.slice(0, 120) });
     // fallback
     const location = detectLocationFromPrompt(prompt);
     const keywords = normalizeKeywords(undefined, prompt);
@@ -390,16 +462,16 @@ Deno.serve(async (req: Request) => {
   try {
     const incoming = (await req.json()) as (ScrapeInput & { prompt?: string });
 
-    // Se veio um prompt livre, refinar com Groq e montar o input do Actor
+    // Se veio um prompt livre, refinar com OpenAI e montar o input do Actor
     let input: ScrapeInput = incoming;
     let refineStatus: "ia" | "fallback" | "none" = "none";
     if (incoming.prompt && incoming.prompt.trim().length > 0) {
-      const refined = await refinePromptWithGroq(incoming.prompt.trim());
+      const refined = await refinePromptWithOpenAI(incoming.prompt.trim());
       console.log("[scrape-linkedin-jobs] refined", refined);
-      refineStatus = GROQ_API_KEY ? "ia" : "fallback";
+      refineStatus = OPENAI_API_KEY ? "ia" : "fallback";
       const kws = normalizeKeywords(refined.keyword, incoming.prompt);
       input = {
-        startUrls: refined.startUrls && refined.startUrls.length ? refined.startUrls : [{ url: buildLinkedinUrl(kws, refined.location, refined.publishedAt) }],
+        startUrls: ensureStartUrls(refined.startUrls, kws, refined.location, refined.publishedAt),
         keyword: kws,
         search: kws.join(" "),
         position: kws.join(" "),
@@ -408,6 +480,18 @@ Deno.serve(async (req: Request) => {
         saveOnlyUniqueItems: refined.saveOnlyUniqueItems,
       };
     }
+
+    // Normaliza startUrls também quando veio input manual sem prompt
+    const kwsForEnsure = normalizeKeywords(input.keyword, incoming.prompt ?? input.search ?? "");
+    input.startUrls = ensureStartUrls(input.startUrls, kwsForEnsure, input.location, input.publishedAt);
+
+    console.log("[scrape-linkedin-jobs] actor input", {
+      startUrls: input.startUrls,
+      keyword: input.keyword,
+      search: input.search,
+      location: input.location,
+      publishedAt: input.publishedAt,
+    });
 
     // Insert search row for authenticated users (RLS enforced via anon token)
     let searchId: string | null = null;
@@ -452,7 +536,7 @@ Deno.serve(async (req: Request) => {
       }
       return new Response(JSON.stringify({ error: "Falha ao iniciar Actor", detail: run }), {
         status: 500,
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...corsHeaders },
       });
     }
 
@@ -466,7 +550,7 @@ Deno.serve(async (req: Request) => {
       }
       return new Response(
         JSON.stringify({ error: "Run não concluído com sucesso", status, defaultDatasetId }),
-        { status: 500, headers: { "Content-Type": "application/json" } }
+        { status: 500, headers: { "Content-Type": "application/json", ...corsHeaders } }
       );
     }
 

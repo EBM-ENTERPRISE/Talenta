@@ -35,6 +35,24 @@ type SearchResult = {
   data: Record<string, unknown>;
 };
 
+type ScrapeResponse = {
+  status: string;
+  defaultDatasetId: string | null;
+  count: number;
+  items: RawJobItem[];
+  refinedInput?: {
+    keyword?: string[];
+    location?: string;
+    publishedAt?: string;
+    startUrls?: { url: string }[];
+    saveOnlyUniqueItems?: boolean;
+    search?: string;
+    position?: string;
+  };
+  refineStatus?: "ia" | "fallback" | "none";
+  searchId?: string;
+};
+
 type SearchRecord = {
   id: string;
   prompt: string;
@@ -76,19 +94,19 @@ const Index = () => {
     setShowResults(true);
     setLoadingResults(true);
     try {
-      const { data, error } = await supabase.functions.invoke<{
-        status: string;
-        defaultDatasetId: string | null;
-        count: number;
-        items: RawJobItem[];
-      }>("scrape-linkedin-jobs", {
+      const { data, error } = await supabase.functions.invoke<ScrapeResponse>("search-router", {
         body: { prompt },
+        headers: {
+          Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY as string}`,
+          apikey: import.meta.env.VITE_SUPABASE_ANON_KEY as string,
+        },
       });
       if (error) {
         console.error("[Index] scrape error", error);
         setResults([]);
       } else {
         console.log("[Index] scrape success", { count: data?.count });
+        console.log("[Index] refine output", { refineStatus: data?.refineStatus, refinedInput: data?.refinedInput, searchId: data?.searchId });
         setResults(Array.isArray(data?.items) ? data.items : []);
       }
     } catch (err) {
@@ -125,9 +143,17 @@ const Index = () => {
     const currentConstraints: SearchConstraints | null = search.constraints || null;
     const outcome = filterByConstraints(jobItems, currentConstraints);
 
-    // Sort by CSP score descending to show closest matches first
+    // Ordena priorizando obrigatórias (mandatoryScore), depois desejáveis (optionalScore)
     const combined = outcome.items.map((item, idx) => ({ item, eval: outcome.evaluations[idx] }));
-    combined.sort((a, b) => (b.eval?.score ?? 0) - (a.eval?.score ?? 0));
+    combined.sort((a, b) => {
+      const am = a.eval?.mandatoryScore ?? 0;
+      const bm = b.eval?.mandatoryScore ?? 0;
+      if (bm !== am) return bm - am;
+      const ao = a.eval?.optionalScore ?? 0;
+      const bo = b.eval?.optionalScore ?? 0;
+      if (bo !== ao) return bo - ao;
+      return (b.eval?.score ?? 0) - (a.eval?.score ?? 0);
+    });
 
     // Update state with sorted results
     setConstraints(currentConstraints);

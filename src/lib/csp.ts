@@ -4,12 +4,15 @@ export interface Constraint<TContext extends ConstraintContext = ConstraintConte
   id: string;
   label: string;
   check: (ctx: TContext) => boolean;
+  // true = obrigatória, false = desejável/opcional
+  mandatory?: boolean;
 }
 
 export interface ConstraintResult {
   id: string;
   label: string;
   ok: boolean;
+  mandatory: boolean;
 }
 
 /**
@@ -19,7 +22,7 @@ export function evaluateConstraints<TContext extends ConstraintContext>(
   constraints: Constraint<TContext>[],
   ctx: TContext,
 ): ConstraintResult[] {
-  return constraints.map((c) => ({ id: c.id, label: c.label, ok: safeCheck(c, ctx) }));
+  return constraints.map((c) => ({ id: c.id, label: c.label, ok: safeCheck(c, ctx), mandatory: c.mandatory ?? true }));
 }
 
 function safeCheck<TContext extends ConstraintContext>(c: Constraint<TContext>, ctx: TContext): boolean {

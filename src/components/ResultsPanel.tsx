@@ -168,7 +168,7 @@ const ResultsPanel = ({ results = [], loading = false, constraints, evaluations 
                 <a
                   href={job.applyUrl}
                   target="_blank"
-                  rel="noreferrer"
+                  rel="noopener noreferrer"
                   className="text-primary hover:underline text-sm"
                 >
                   Candidatar-se
