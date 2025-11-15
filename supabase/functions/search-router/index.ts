@@ -63,6 +63,22 @@ function extractRole(prompt: string): string | undefined {
   return words.slice(0, 3).join(" ") || undefined;
 }
 
+function extractPeopleQuery(prompt: string): string | undefined {
+  const loc = detectLocation(prompt)?.toLowerCase() || "";
+  const locTokens = loc ? loc.replace(/[,]/g, " ").split(/\s+/).filter(Boolean) : [];
+  const cleaned = prompt
+    .toLowerCase()
+    .replace(/["'`]/g, "")
+    .replace(/\./g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .split(" ");
+  const stop = new Set(["quero","procuro","busco","uma","um","vaga","vagas","em","para","de","no","na","o","a"]);
+  const filtered = cleaned.filter(w => !stop.has(w) && !locTokens.includes(w));
+  const unique = Array.from(new Set(filtered)).filter(s => s.length >= 2);
+  return unique.slice(0, 3).join(" ") || undefined;
+}
+
 function heuristicTarget(prompt: string): RouteTarget {
   const p = prompt.toLowerCase();
   // Disparadores diretos para perfis/pessoas, independentes de profissão
@@ -70,6 +86,7 @@ function heuristicTarget(prompt: string): RouteTarget {
     /\bperfil(?:es)?\b/,
     /\bpessoas?\b/,
     /\bprofissionais?\b/,
+    /\bprofissional\b/,
     /\bcandidatos?\b/,
     /\btalentos?\b/,
     /\blinkedin\b/,
@@ -98,7 +115,29 @@ function heuristicTarget(prompt: string): RouteTarget {
   ];
   const peopleScore = peopleHints.reduce((acc, w) => acc + (p.includes(w) ? 1 : 0), 0);
   const jobScore = jobHints.reduce((acc, w) => acc + (p.includes(w) ? 1 : 0), 0);
-  return peopleScore > jobScore ? "people" : "jobs";
+  if (jobScore > peopleScore) return "jobs";
+  return "people";
+}
+
+function computeScores(prompt: string): { peopleScore: number; jobScore: number; hasJobHint: boolean; hasPeopleHint: boolean } {
+  const p = prompt.toLowerCase();
+  const peopleHints = [
+    "perfil linkedin","perfil","perfis","pessoa","pessoas","profissional","profissionais","candidato","candidatos",
+    "talento","talentos","curriculo","currículo","contato","contact","email","telefone",
+    "médico","medico","advogado","designer","design","arquitet","engenheiro","engenharia","marketing","comercial",
+    "vendas","vendedor","recursos humanos","rh","recrutador","recruiter","financeiro","finanças","contabilidade",
+    "professor","docente","analista","consultor","gestor","gerente","operador","técnico","tecnico","enfermeiro",
+    "psicólogo","psicologo","nutricionista","farmacêutico","farmaceutico",
+    // termos comuns de cargos
+    "programador","developer","desenvolvedor","data scientist","engenheiro de dados","frontend","backend","fullstack"
+  ];
+  const jobHints = [
+    "vaga","vagas","emprego","trabalho","oportunidade","job","posição","posicao","contrata","hiring","opening",
+    "salário","salario","benefícios","beneficios","clt","pj","full-time","part-time","candidatar","aplicar","apply"
+  ];
+  const peopleScore = peopleHints.reduce((acc, w) => acc + (p.includes(w) ? 1 : 0), 0);
+  const jobScore = jobHints.reduce((acc, w) => acc + (p.includes(w) ? 1 : 0), 0);
+  return { peopleScore, jobScore, hasJobHint: jobScore > 0, hasPeopleHint: peopleScore > 0 };
 }
 
 async function classifyTarget(prompt: string): Promise<RouteTarget> {
@@ -125,7 +164,11 @@ async function classifyTarget(prompt: string): Promise<RouteTarget> {
   try {
     const parsed = JSON.parse(content);
     const t = parsed?.target;
-    if (t === "people" || t === "jobs") return t;
+    if (t === "people" || t === "jobs") {
+      const { peopleScore, jobScore, hasJobHint } = computeScores(prompt);
+      if (t === "jobs" && !hasJobHint && peopleScore >= jobScore) return "people";
+      return t;
+    }
   } catch (e) {
     console.warn("[search-router] falha ao parsear conteúdo de classificação", { preview: content.slice(0, 120) });
     // Fallback extra: se o conteúdo mencionar explicitamente, respeite
@@ -168,11 +211,18 @@ Deno.serve(async (req: Request) => {
       target = overrideRaw as RouteTarget;
       decisionSource = "forced";
     } else {
-      const prefixMatch = effectivePrompt.match(/^\s*(people|pessoas|perfil)\s*:\s*(.*)$/i);
-      if (prefixMatch) {
+      const peoplePrefix = effectivePrompt.match(/^\s*(people|pessoas|perfil|profissional(?:es)?)\s*:\s*(.*)$/i);
+      if (peoplePrefix) {
         target = "people";
-        effectivePrompt = prefixMatch[2].trim();
+        effectivePrompt = peoplePrefix[2].trim();
         decisionSource = "prefix";
+      } else {
+        const jobsPrefix = effectivePrompt.match(/^\s*(jobs?|vagas?|emprego|job)\s*:\s*(.*)$/i);
+        if (jobsPrefix) {
+          target = "jobs";
+          effectivePrompt = jobsPrefix[2].trim();
+          decisionSource = "prefix";
+        }
       }
     }
 
@@ -181,6 +231,13 @@ Deno.serve(async (req: Request) => {
       target = await classifyTarget(effectivePrompt);
       // Se OPENAI_API_KEY ausente, classifyTarget já usa heurística, marcamos source apropriadamente
       decisionSource = OPENAI_API_KEY ? "ia" : "heuristic";
+      if (target === "jobs") {
+        const { peopleScore, jobScore, hasJobHint } = computeScores(effectivePrompt);
+        if (!hasJobHint && peopleScore >= jobScore) {
+          target = "people";
+          decisionSource = "heuristic";
+        }
+      }
     }
     const base = getFunctionsBaseUrl();
     if (!base) {
@@ -194,10 +251,10 @@ Deno.serve(async (req: Request) => {
       targetPath = "/scrape-linkedin-people";
       payload = {
         locations: detectLocation(effectivePrompt) ? [detectLocation(effectivePrompt)!] : undefined,
-        profileScraperMode: "Short",
+        profileScraperMode: "Full",
         maxItems: typeof body?.maxItems === "number" ? body.maxItems : 20,
         recentlyChangedJobs: false,
-        searchQuery: extractRole(effectivePrompt) || effectivePrompt,
+        searchQuery: extractPeopleQuery(effectivePrompt) || extractRole(effectivePrompt) || effectivePrompt,
       };
     } else {
       payload = { prompt: effectivePrompt };
@@ -220,9 +277,28 @@ Deno.serve(async (req: Request) => {
       headers: forwardHeaders,
       body: JSON.stringify(payload),
     });
-    const result = await resp.text();
+    const resultText = await resp.text();
     const contentType = resp.headers.get("Content-Type") || "application/json";
-    return new Response(result, { status: resp.status, headers: { "Content-Type": contentType, ...corsHeaders, "X-Route-Target": target, "X-Route-Decision": decisionSource } });
+    // Tenta normalizar a resposta em um envelope com metadados da roteamento
+    let parsed: unknown = null;
+    try { parsed = JSON.parse(resultText); } catch { parsed = null; }
+    if (parsed && typeof parsed === "object") {
+      const obj = parsed as Record<string, unknown>;
+      const items = Array.isArray(obj.items) ? obj.items : [];
+      const count = typeof obj.count === "number" ? obj.count : (Array.isArray(items) ? items.length : 0);
+      const defaultDatasetId = (obj.defaultDatasetId as string | undefined) ?? (obj.datasetId as string | undefined) ?? null;
+      const envelope = {
+        target,
+        decision: decisionSource,
+        forwardedPath: targetPath,
+        ...obj,
+        count,
+        defaultDatasetId,
+      } as Record<string, unknown>;
+      return new Response(JSON.stringify(envelope), { status: resp.status, headers: { "Content-Type": "application/json", ...corsHeaders, "X-Route-Target": target, "X-Route-Decision": decisionSource, "X-Route-Path": targetPath } });
+    }
+    // Se não for JSON, repassa bruto
+    return new Response(resultText, { status: resp.status, headers: { "Content-Type": contentType, ...corsHeaders, "X-Route-Target": target, "X-Route-Decision": decisionSource, "X-Route-Path": targetPath } });
   } catch (e) {
     console.error("[search-router] erro inesperado", e);
     return new Response(JSON.stringify({ error: "Erro interno", message: String((e as Error)?.message || e) }), { status: 500, headers: { "Content-Type": "application/json", ...corsHeaders } });

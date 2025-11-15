@@ -40,6 +40,9 @@ type ScrapeResponse = {
   defaultDatasetId: string | null;
   count: number;
   items: RawJobItem[];
+  target?: "jobs" | "people";
+  decision?: "forced" | "prefix" | "ia" | "heuristic";
+  forwardedPath?: string;
   refinedInput?: {
     keyword?: string[];
     location?: string;
@@ -56,6 +59,7 @@ type ScrapeResponse = {
 type SearchRecord = {
   id: string;
   prompt: string;
+  target?: 'job' | 'profile';
   status: "pending" | "running" | "done" | "failed";
   created_at: string;
   constraints?: {
@@ -71,8 +75,10 @@ const Index = () => {
   const [showResults, setShowResults] = useState(false);
   const [currentPrompt, setCurrentPrompt] = useState("");
   const [sessionEmail, setSessionEmail] = useState<string | null>(null);
-  const [results, setResults] = useState<RawJobItem[]>([]);
+  const [results, setResults] = useState<Record<string, unknown>[]>([]);
   const [loadingResults, setLoadingResults] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [currentTarget, setCurrentTarget] = useState<"jobs" | "people" | null>(null);
 
   useEffect(() => {
     const { data: sub } = supabase.auth.onAuthStateChange((event, session) => {
@@ -93,21 +99,49 @@ const Index = () => {
     setCurrentPrompt(prompt);
     setShowResults(true);
     setLoadingResults(true);
+    setConstraints(null);
+    setEvaluations(null);
     try {
+      // Se o usuário mencionar explicitamente perfis/pessoas, force o roteador para "people"
+      const lower = prompt.toLowerCase();
+      const peopleTriggers = [
+        /\bperfil(?:es)?\b/,
+        /\bpessoas?\b/,
+        /\bprofissional(?:es)?\b/,
+        /\bcandidatos?\b/,
+        /\btalentos?\b/,
+      ];
+      const forceTarget = peopleTriggers.some((re) => re.test(lower)) ? "people" : undefined;
+      const { data: sessionData } = await supabase.auth.getSession();
+      const accessToken = sessionData.session?.access_token;
       const { data, error } = await supabase.functions.invoke<ScrapeResponse>("search-router", {
-        body: { prompt },
+        body: { prompt, forceTarget },
         headers: {
-          Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY as string}`,
+          Authorization: accessToken ? `Bearer ${accessToken}` : `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY as string}`,
           apikey: import.meta.env.VITE_SUPABASE_ANON_KEY as string,
         },
       });
       if (error) {
         console.error("[Index] scrape error", error);
         setResults([]);
+        setCurrentTarget(null);
       } else {
-        console.log("[Index] scrape success", { count: data?.count });
+        console.log("[Index] scrape success", { count: data?.count, target: data?.target, decision: data?.decision, path: data?.forwardedPath });
         console.log("[Index] refine output", { refineStatus: data?.refineStatus, refinedInput: data?.refinedInput, searchId: data?.searchId });
-        setResults(Array.isArray(data?.items) ? data.items : []);
+        setResults(Array.isArray(data?.items) ? (data!.items as unknown as Record<string, unknown>[]) : []);
+        setCurrentTarget(data?.target ?? null);
+        const refined = data?.refinedInput;
+        const nextConstraints: SearchConstraints = {
+          refinedInput: {
+            keyword: Array.isArray(refined?.keyword) ? refined!.keyword : (
+              typeof refined?.position === 'string' && refined!.position.trim() ? [refined!.position.trim()] : []
+            ),
+            location: typeof refined?.location === 'string' ? refined!.location : undefined,
+          },
+          keywords: Array.isArray(refined?.keyword) ? refined!.keyword : undefined,
+          locationPriority: 'required',
+        };
+        setConstraints(nextConstraints);
       }
     } catch (err) {
       console.error("[Index] scrape exception", err);
@@ -140,7 +174,7 @@ const Index = () => {
     });
 
     // Apply CSP evaluation (non-filtering, just scoring/explanations)
-    const currentConstraints: SearchConstraints | null = search.constraints || null;
+    const currentConstraints: SearchConstraints | null = search.target === 'profile' ? null : (search.constraints || null);
     const outcome = filterByConstraints(jobItems, currentConstraints);
 
     // Ordena priorizando obrigatórias (mandatoryScore), depois desejáveis (optionalScore)
@@ -164,6 +198,7 @@ const Index = () => {
 
     // Use the actual prompt from the saved search for display/editing
     setCurrentPrompt(search.prompt);
+    setCurrentTarget(search.target === 'profile' ? 'people' : 'jobs');
 
     console.log('[Index] State updated - showResults: true, results count:', jobItems.length);
   };
@@ -196,12 +231,43 @@ const Index = () => {
               <Button 
                 variant="default"
                 className="h-9 px-6 bg-primary hover:bg-primary/90 text-foreground rounded-full font-medium"
-                onClick={() => {
-                  console.log('[Index] salvar click', { prompt: currentPrompt });
-                  // TODO: implementar salvar
+                disabled={saving || results.length === 0}
+                onClick={async () => {
+                  console.log('[Index] salvar click', { prompt: currentPrompt, count: results.length });
+                  try {
+                    setSaving(true);
+                    const { data: sessionData } = await supabase.auth.getSession();
+                    const accessToken = sessionData.session?.access_token;
+                    if (!accessToken) {
+                      console.error('[Index] save-search aborted: missing user access token');
+                      setSaving(false);
+                      return;
+                    }
+                    const { data, error } = await supabase.functions.invoke<{ ok: boolean; searchId?: string; count?: number }>("save-search", {
+                      body: {
+                        target: currentTarget === 'people' ? 'profile' : 'job',
+                        prompt: currentPrompt,
+                        items: results,
+                        constraints: constraints || null,
+                      },
+                      headers: {
+                        Authorization: `Bearer ${accessToken}`,
+                        apikey: import.meta.env.VITE_SUPABASE_ANON_KEY as string,
+                      },
+                    });
+                    if (error) {
+                      console.error('[Index] save-search error', error);
+                    } else {
+                      console.log('[Index] save-search success', { searchId: data?.searchId, count: data?.count });
+                    }
+                  } catch (e) {
+                    console.error('[Index] save-search exception', e);
+                  } finally {
+                    setSaving(false);
+                  }
                 }}
               >
-                Salvar
+                {saving ? 'A salvar...' : 'Salvar'}
               </Button>
             ) : (
               <Link to="/auth?mode=login">
@@ -219,7 +285,7 @@ const Index = () => {
         {/* Results View */}
         <div className="flex-1 flex overflow-hidden">
           <ThoughtsPanel onNewPrompt={handleNewPrompt} initialPrompt={currentPrompt} />
-          <ResultsPanel results={results} loading={loadingResults} constraints={constraints || undefined} evaluations={evaluations || undefined} />
+      <ResultsPanel results={results as unknown as RawJobItem[]} loading={loadingResults} constraints={constraints || undefined} evaluations={evaluations || undefined} target={currentTarget || undefined} />
         </div>
       </div>
     );

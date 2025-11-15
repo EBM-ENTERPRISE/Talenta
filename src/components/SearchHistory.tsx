@@ -8,6 +8,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 type SearchRecord = {
   id: string;
   prompt: string;
+  target?: 'job' | 'profile';
   status: "pending" | "running" | "done" | "failed";
   created_at: string;
   constraints?: {
@@ -52,8 +53,8 @@ const SearchHistory = ({ onSearchSelect, onResultsSelect }: SearchHistoryProps) 
 
       const { data, error: fetchError } = await supabase
         .from("searches")
-        .select("id, prompt, status, created_at, constraints")
-        .eq("target", "job")
+        .select("id, prompt, target, status, created_at, constraints")
+        .in("target", ["job", "profile"]) 
         .order("created_at", { ascending: false })
         .limit(20);
 
