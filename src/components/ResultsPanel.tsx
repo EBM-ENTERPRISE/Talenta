@@ -78,6 +78,12 @@ const ResultsPanel = ({ results = [], loading = false, constraints, evaluations,
             const firstPos = (currPos[0] ?? {}) as Record<string, unknown>;
             location = getStr(firstPos['location']) || location;
           }
+          if (!location && snippet) {
+            const m = snippet.match(/(?:Localidade|Localização|Location)\s*[:\-]\s*([^·|,;]+)/i);
+            if (m && m[1]) {
+              location = sanitize(m[1]);
+            }
+          }
           return { title: name, companyName: '', location: location || '—', description: snippet, applyUrl: profileUrl, postedAt: '' } as JobResult;
         }
         const title = getStr(item['title']) || getStr(item['position']) || 'Vaga';

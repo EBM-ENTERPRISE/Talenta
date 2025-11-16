@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
+import * as XLSX from "xlsx";
 import { Link } from "react-router-dom";
 import TalentaLogo from "@/components/TalentaLogo";
 import SearchInput from "@/components/SearchInput";
@@ -208,6 +209,72 @@ const Index = () => {
     setCurrentPrompt("");
   };
 
+  const exportExcel = () => {
+    if (!Array.isArray(results) || results.length === 0) return;
+    const sanitize = (s: string) => s.replace(/^\s*[`'\"]?\s*/, "").replace(/\s*[`'\"]?\s*$/, "");
+    const getStr = (v: unknown): string => {
+      if (typeof v === "string") return sanitize(v);
+      if (v && typeof v === "object") {
+        const o = v as Record<string, unknown>;
+        const t = o["linkedinText"] || o["text"] || o["name"];
+        if (typeof t === "string") return sanitize(t);
+      }
+      return "";
+    };
+    const getLocation = (obj: unknown): string => {
+      if (typeof obj === "string") return sanitize(obj);
+      if (obj && typeof obj === "object") {
+        const o = obj as Record<string, unknown>;
+        const parsed = o["parsed"] as Record<string, unknown> | undefined;
+        const txt = typeof o["linkedinText"] === "string" ? (o["linkedinText"] as string) : undefined;
+        const ptxt = parsed && typeof parsed["text"] === "string" ? (parsed["text"] as string) : undefined;
+        return sanitize(ptxt || txt || "");
+      }
+      return "";
+    };
+    const rows = results.map((raw: unknown) => {
+      const item = (raw ?? {}) as Record<string, unknown>;
+      if (currentTarget === "people") {
+        const first = getStr(item["firstName"]);
+        const last = getStr(item["lastName"]);
+        const name = (first || last) ? `${first}${first && last ? " " : ""}${last}` : (getStr(item["name"]) || getStr(item["title"]) || "");
+        const resumo = getStr(item["headline"]) || getStr(item["snippet"]) || "";
+        const directUrl = getStr(item["linkedinUrl"]) || getStr(item["profileUrl"]) || getStr(item["link"]);
+        const publicId = getStr(item["publicIdentifier"]);
+        const url = directUrl || (publicId ? `https://www.linkedin.com/in/${publicId}` : "");
+        let location = getLocation(item["location"]) || getStr(item["location"]) || "";
+        if (!location) {
+          const profLoc = (item["profileLocation"] ?? item["geo"]) as unknown;
+          location = getLocation(profLoc) || location;
+        }
+        if (!location) {
+          const currPos = Array.isArray(item["currentPosition"]) ? (item["currentPosition"] as unknown[]) : [];
+          const firstPos = (currPos[0] ?? {}) as Record<string, unknown>;
+          location = getStr(firstPos["location"]) || location;
+        }
+        const currPos = Array.isArray(item["currentPosition"]) ? (item["currentPosition"] as unknown[]) : [];
+        const firstPos = (currPos[0] ?? {}) as Record<string, unknown>;
+        const posTitle = getStr(firstPos["position"]);
+        const posCompany = getStr(firstPos["companyName"]);
+        const descricao = (posTitle || posCompany) ? `${posTitle}${posTitle && posCompany ? " · " : ""}${posCompany}` : (resumo ? resumo.slice(0, 140) : "");
+        return { Nome: name, Resumo: resumo, Localizacao: location, Descricao: descricao, LinkedIn: url };
+      }
+      const title = getStr(item["title"]) || getStr(item["position"]) || "";
+      const companyName = getStr(item["companyName"]) || getStr(item["company"]) || "";
+      const location = getStr(item["location"]) || getStr(item["city"]) || "";
+      const description = getStr(item["description"]) || getStr(item["snippet"]) || "";
+      const applyUrl = getStr(item["applyUrl"]) || getStr(item["url"]) || getStr(item["link"]) || "";
+      const postedAt = getStr(item["postedAt"]) || getStr(item["datePosted"]) || "";
+      return { Titulo: title, Empresa: companyName, Localizacao: location, Descricao: description, URL: applyUrl, Publicada: postedAt };
+    });
+    const ws = XLSX.utils.json_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, currentTarget === "people" ? "Perfis" : "Vagas");
+    const base = currentPrompt.trim() || (currentTarget === "people" ? "perfis" : "vagas");
+    const fname = `${base.replace(/\s+/g, "_")}_${currentTarget === "people" ? "perfis" : "vagas"}.xlsx`;
+    XLSX.writeFile(wb, fname);
+  };
+
   if (showResults) {
     return (
       <div className="min-h-screen flex flex-col">
@@ -228,6 +295,7 @@ const Index = () => {
           </div>
           <div className="flex items-center gap-3">
             {sessionEmail ? (
+              <>
               <Button 
                 variant="default"
                 className="h-9 px-6 bg-primary hover:bg-primary/90 text-foreground rounded-full font-medium"
@@ -269,6 +337,15 @@ const Index = () => {
               >
                 {saving ? 'A salvar...' : 'Salvar'}
               </Button>
+              <Button
+                variant="outline"
+                className="h-9 px-6 rounded-full font-medium"
+                disabled={results.length === 0}
+                onClick={exportExcel}
+              >
+                Exportar Excel
+              </Button>
+              </>
             ) : (
               <Link to="/auth?mode=login">
                 <Button 
