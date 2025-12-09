@@ -1,4 +1,4 @@
-import { evaluateConstraints, ConstraintResult } from '@/lib/csp';
+import { evaluateConstraints, ConstraintResult, solveSelection } from '@/lib/csp';
 import { makeJobConstraints, type SearchConstraints, type RawJobItem } from '@/lib/constraints';
 
 export interface CspEval {
@@ -61,7 +61,7 @@ export function filterByConstraints(items: RawJobItem[], constraints?: SearchCon
     const satisfiedOptional = res.filter((r) => !r.mandatory && r.ok).length;
 
     const mandatoryScore = totalMandatory > 0 ? satisfiedMandatory / totalMandatory : 1;
-    const optionalScore = totalOptional > 0 ? satisfiedOptional / totalOptional : 0;
+    const optionalScore = totalOptional > 0 ? satisfiedOptional / totalOptional : 1;
     // Score agregado: obrigatórias têm peso dominante
     const score = Math.round((mandatoryScore * 0.8 + optionalScore * 0.2) * 100);
     const ok = totalMandatory === 0 ? true : (satisfiedMandatory === totalMandatory);
@@ -75,3 +75,31 @@ export function filterByConstraints(items: RawJobItem[], constraints?: SearchCon
 }
 
 export type { SearchConstraints, RawJobItem };
+
+export function optimizeByConstraints(items: RawJobItem[], constraints?: SearchConstraints | null, k = 10): FilterOutcome {
+  if (!constraints) {
+    const evals = items.map(() => ({ ok: true, violated: [], satisfied: [], score: 100, mandatoryScore: 1, optionalScore: 0, details: [] as ConstraintResult[] }));
+    return { items, evaluations: evals };
+  }
+  const cons = makeJobConstraints(constraints);
+  if (cons.length === 0) {
+    const evals = items.map(() => ({ ok: true, violated: [], satisfied: [], score: 100, mandatoryScore: 1, optionalScore: 0, details: [] as ConstraintResult[] }));
+    return { items, evaluations: evals };
+  }
+  const sel = solveSelection(items, cons, Math.min(k, items.length));
+  const selectedItems = sel.indices.map((i) => items[i]);
+  const evaluations: CspEval[] = sel.evaluations.map((res) => {
+    const violated = res.filter((r) => !r.ok).map((r) => r.label);
+    const satisfied = res.filter((r) => r.ok).map((r) => r.label);
+    const totalMandatory = res.filter((r) => r.mandatory).length;
+    const satisfiedMandatory = res.filter((r) => r.mandatory && r.ok).length;
+    const totalOptional = res.filter((r) => !r.mandatory).length;
+    const satisfiedOptional = res.filter((r) => !r.mandatory && r.ok).length;
+    const mandatoryScore = totalMandatory > 0 ? satisfiedMandatory / totalMandatory : 1;
+    const optionalScore = totalOptional > 0 ? satisfiedOptional / totalOptional : 1;
+    const score = Math.round((mandatoryScore * 0.8 + optionalScore * 0.2) * 100);
+    const ok = totalMandatory === 0 ? true : satisfiedMandatory === totalMandatory;
+    return { ok, violated, satisfied, score, mandatoryScore, optionalScore, details: res };
+  });
+  return { items: selectedItems, evaluations };
+}

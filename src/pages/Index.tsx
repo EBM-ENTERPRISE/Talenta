@@ -9,7 +9,7 @@ import ThoughtsPanel from "@/components/ThoughtsPanel";
 import ResultsPanel from "@/components/ResultsPanel";
 import SearchSidebar from "@/components/SearchSidebar";
 import { supabase } from "@/lib/utils";
-import { filterByConstraints, type SearchConstraints, type CspEval } from "@/lib/applyCspToResults";
+import { filterByConstraints, optimizeByConstraints, type SearchConstraints, type CspEval } from "@/lib/applyCspToResults";
 
 type RawJobItem = {
   title?: string;
@@ -129,7 +129,7 @@ const Index = () => {
       } else {
         console.log("[Index] scrape success", { count: data?.count, target: data?.target, decision: data?.decision, path: data?.forwardedPath });
         console.log("[Index] refine output", { refineStatus: data?.refineStatus, refinedInput: data?.refinedInput, searchId: data?.searchId });
-        setResults(Array.isArray(data?.items) ? (data!.items as unknown as Record<string, unknown>[]) : []);
+        const rawItems = Array.isArray(data?.items) ? (data!.items as unknown as Record<string, unknown>[]) : [];
         setCurrentTarget(data?.target ?? null);
         const refined = data?.refinedInput;
         const nextConstraints: SearchConstraints = {
@@ -142,7 +142,10 @@ const Index = () => {
           keywords: Array.isArray(refined?.keyword) ? refined!.keyword : undefined,
           locationPriority: 'required',
         };
+        const outcome = optimizeByConstraints(rawItems as RawJobItem[], nextConstraints, 10);
         setConstraints(nextConstraints);
+        setEvaluations(outcome.evaluations);
+        setResults(outcome.items as unknown as Record<string, unknown>[]);
       }
     } catch (err) {
       console.error("[Index] scrape exception", err);
@@ -176,24 +179,12 @@ const Index = () => {
 
     // Apply CSP evaluation (non-filtering, just scoring/explanations)
     const currentConstraints: SearchConstraints | null = search.target === 'profile' ? null : (search.constraints || null);
-    const outcome = filterByConstraints(jobItems, currentConstraints);
+    const outcome = optimizeByConstraints(jobItems, currentConstraints || undefined, 10);
 
-    // Ordena priorizando obrigatórias (mandatoryScore), depois desejáveis (optionalScore)
-    const combined = outcome.items.map((item, idx) => ({ item, eval: outcome.evaluations[idx] }));
-    combined.sort((a, b) => {
-      const am = a.eval?.mandatoryScore ?? 0;
-      const bm = b.eval?.mandatoryScore ?? 0;
-      if (bm !== am) return bm - am;
-      const ao = a.eval?.optionalScore ?? 0;
-      const bo = b.eval?.optionalScore ?? 0;
-      if (bo !== ao) return bo - ao;
-      return (b.eval?.score ?? 0) - (a.eval?.score ?? 0);
-    });
 
-    // Update state with sorted results
     setConstraints(currentConstraints);
-    setEvaluations(combined.map((c) => c.eval));
-    setResults(combined.map((c) => c.item));
+    setEvaluations(outcome.evaluations);
+    setResults(outcome.items as unknown as Record<string, unknown>[]);
     setShowResults(true);
     setLoadingResults(false);
 
@@ -201,7 +192,7 @@ const Index = () => {
     setCurrentPrompt(search.prompt);
     setCurrentTarget(search.target === 'profile' ? 'people' : 'jobs');
 
-    console.log('[Index] State updated - showResults: true, results count:', jobItems.length);
+    console.log('[Index] State updated - showResults: true, results count:', outcome.items.length);
   };
 
   const handleBack = () => {
