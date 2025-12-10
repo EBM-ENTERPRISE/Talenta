@@ -17,7 +17,7 @@ Você pode aplicar a migração de duas maneiras:
 - Inicie serviços locais: `supabase start`
 - Execute a migração:
   ```bash
-  supabase db reset --db-url "postgresql://postgres:postgres@localhost:54322/postgres" --use-mig-dir supabase/migrations
+  supabase db reset --db-url "postgresql://postgres:postgres@127.0.0.1:54322/postgres" --use-mig-dir supabase/migrations
   ```
 
 > Observação: ajuste `--db-url` conforme sua configuração local. Em ambiente cloud, aplique via console.
