@@ -30,27 +30,76 @@ type RawJobItem = {
   datePosted?: string;
 };
 
-const ResultsPanel = ({ results = [], loading = false, constraints, evaluations }: { results?: RawJobItem[]; loading?: boolean; constraints?: SearchConstraints; evaluations?: CspEval[] }) => {
+const ResultsPanel = ({ results = [], loading = false, constraints, evaluations, target }: { results?: RawJobItem[] | Record<string, unknown>[]; loading?: boolean; constraints?: SearchConstraints; evaluations?: CspEval[]; target?: "jobs" | "people" }) => {
   const [internalResults, setInternalResults] = useState<JobResult[]>([]);
   const [page, setPage] = useState(1);
   const pageSize = 10;
 
   useEffect(() => {
     if (Array.isArray(results) && results.length > 0) {
-      const mapped = results.map((item: RawJobItem) => ({
-        title: item.title ?? item.position ?? "Vaga",
-        companyName: item.companyName ?? item.company ?? "Empresa",
-        location: item.location ?? item.city ?? "Localização não informada",
-        description: item.description ?? item.snippet ?? "",
-        applyUrl: item.applyUrl ?? item.url ?? item.link ?? "#",
-        postedAt: item.postedAt ?? item.datePosted ?? "",
-      }));
+      const sanitize = (s: string) => s.replace(/^\s*[`'"]?\s*/, '').replace(/\s*[`'"]?\s*$/, '');
+      const getStr = (v: unknown): string => {
+        if (typeof v === 'string') return sanitize(v);
+        if (v && typeof v === 'object') {
+          const o = v as Record<string, unknown>;
+          const t = o['linkedinText'] || o['text'] || o['name'];
+          if (typeof t === 'string') return sanitize(t);
+        }
+        return '';
+      };
+      const getLocation = (obj: unknown): string => {
+        if (typeof obj === 'string') return sanitize(obj);
+        if (obj && typeof obj === 'object') {
+          const o = obj as Record<string, unknown>;
+          const parsed = o['parsed'] as Record<string, unknown> | undefined;
+          const txt = typeof o['linkedinText'] === 'string' ? o['linkedinText'] as string : undefined;
+          const ptxt = parsed && typeof parsed['text'] === 'string' ? parsed['text'] as string : undefined;
+          return sanitize(ptxt || txt || '');
+        }
+        return '';
+      };
+      const mapped = results.map((raw: unknown) => {
+        const item = (raw ?? {}) as Record<string, unknown>;
+        if (target === 'people') {
+          const first = getStr(item['firstName']);
+          const last = getStr(item['lastName']);
+          const name = (first || last) ? `${first}${first && last ? ' ' : ''}${last}` : (getStr(item['name']) || getStr(item['title']) || 'Perfil');
+          const snippet = getStr(item['headline']) || getStr(item['snippet']) || '';
+          const directUrl = getStr(item['linkedinUrl']) || getStr(item['profileUrl']) || getStr(item['link']);
+          const publicId = getStr(item['publicIdentifier']);
+          const profileUrl = directUrl || (publicId ? `https://www.linkedin.com/in/${publicId}` : '#');
+          let location = getLocation(item['location']) || getStr(item['location']) || '';
+          if (!location) {
+            const profLoc = (item['profileLocation'] ?? item['geo']) as unknown;
+            location = getLocation(profLoc) || location;
+          }
+          if (!location) {
+            const currPos = Array.isArray(item['currentPosition']) ? (item['currentPosition'] as unknown[]) : [];
+            const firstPos = (currPos[0] ?? {}) as Record<string, unknown>;
+            location = getStr(firstPos['location']) || location;
+          }
+          if (!location && snippet) {
+            const m = snippet.match(/(?:Localidade|Localização|Location)\s*[:\-]\s*([^·|,;]+)/i);
+            if (m && m[1]) {
+              location = sanitize(m[1]);
+            }
+          }
+          return { title: name, companyName: '', location: location || '—', description: snippet, applyUrl: profileUrl, postedAt: '' } as JobResult;
+        }
+        const title = getStr(item['title']) || getStr(item['position']) || 'Vaga';
+        const companyName = getStr(item['companyName']) || getStr(item['company']) || 'Empresa';
+        const location = getStr(item['location']) || getStr(item['city']) || 'Localização não informada';
+        const description = getStr(item['description']) || getStr(item['snippet']) || '';
+        const applyUrl = getStr(item['applyUrl']) || getStr(item['url']) || getStr(item['link']) || '#';
+        const postedAt = getStr(item['postedAt']) || getStr(item['datePosted']) || '';
+        return { title, companyName, location, description, applyUrl, postedAt } as JobResult;
+      });
       setInternalResults(mapped);
     } else {
       setInternalResults([]);
     }
-    setPage(1); // reset to first page when results change
-  }, [results]);
+    setPage(1);
+  }, [results, target]);
 
   const total = internalResults.length;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
@@ -64,7 +113,7 @@ const ResultsPanel = ({ results = [], loading = false, constraints, evaluations 
       <div className="flex-1 flex flex-col items-center justify-center p-8">
         <Loader2 className="h-12 w-12 animate-spin text-primary mb-4" />
         <h3 className="text-xl font-semibold text-foreground mb-2">
-          A procurar vagas no LinkedIn...
+          {target === 'people' ? 'A procurar perfis no LinkedIn...' : 'A procurar vagas no LinkedIn...'}
         </h3>
         <p className="text-foreground/60 text-center max-w-md">
           Estamos a varrer as vagas e preparar os resultados.
@@ -91,7 +140,7 @@ const ResultsPanel = ({ results = [], loading = false, constraints, evaluations 
       <div className="max-w-4xl mx-auto">
         <div className="mb-6">
           <h2 className="text-2xl font-bold text-foreground mb-2">
-            {internalResults.length} Vagas Encontradas
+            {internalResults.length} {target === 'people' ? 'Perfis Encontrados' : 'Vagas Encontradas'}
           </h2>
           <p className="text-foreground/70">
             Resultados ordenados por proximidade
@@ -171,7 +220,7 @@ const ResultsPanel = ({ results = [], loading = false, constraints, evaluations 
                   rel="noopener noreferrer"
                   className="text-primary hover:underline text-sm"
                 >
-                  Candidatar-se
+                  {target === 'people' ? 'Ver perfil' : 'Candidatar-se'}
                 </a>
               )}
             </Card>

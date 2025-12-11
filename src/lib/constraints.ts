@@ -239,9 +239,9 @@ export function makeJobConstraints(c: SearchConstraints): Constraint<RawJobItem>
       mandatory: (c.locationPriority === 'required'),
       check: (job: RawJobItem) => {
         const inLoc = job.location || job.city || '';
-        const normHay = collapseSpaceHyphen(normalizeBase(inLoc));
-        const normLoc = collapseSpaceHyphen(normalizeBase(loc));
-        return normHay.includes(normLoc);
+        const hay = normalizeBase(inLoc).replace(/[,]+/g, ' ');
+        const tokens = normalizeBase(loc).replace(/[,]+/g, ' ').split(/[\s-]+/).filter(Boolean);
+        return tokens.every((t) => includesNormalized(hay, t));
       },
     });
   }

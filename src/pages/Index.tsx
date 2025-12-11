@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
+import * as XLSX from "xlsx";
 import { Link } from "react-router-dom";
 import TalentaLogo from "@/components/TalentaLogo";
 import SearchInput from "@/components/SearchInput";
@@ -8,7 +9,7 @@ import ThoughtsPanel from "@/components/ThoughtsPanel";
 import ResultsPanel from "@/components/ResultsPanel";
 import SearchSidebar from "@/components/SearchSidebar";
 import { supabase } from "@/lib/utils";
-import { filterByConstraints, type SearchConstraints, type CspEval } from "@/lib/applyCspToResults";
+import { filterByConstraints, optimizeByConstraints, type SearchConstraints, type CspEval } from "@/lib/applyCspToResults";
 
 type RawJobItem = {
   title?: string;
@@ -40,6 +41,9 @@ type ScrapeResponse = {
   defaultDatasetId: string | null;
   count: number;
   items: RawJobItem[];
+  target?: "jobs" | "people";
+  decision?: "forced" | "prefix" | "ia" | "heuristic";
+  forwardedPath?: string;
   refinedInput?: {
     keyword?: string[];
     location?: string;
@@ -56,6 +60,7 @@ type ScrapeResponse = {
 type SearchRecord = {
   id: string;
   prompt: string;
+  target?: 'job' | 'profile';
   status: "pending" | "running" | "done" | "failed";
   created_at: string;
   constraints?: {
@@ -71,8 +76,10 @@ const Index = () => {
   const [showResults, setShowResults] = useState(false);
   const [currentPrompt, setCurrentPrompt] = useState("");
   const [sessionEmail, setSessionEmail] = useState<string | null>(null);
-  const [results, setResults] = useState<RawJobItem[]>([]);
+  const [results, setResults] = useState<Record<string, unknown>[]>([]);
   const [loadingResults, setLoadingResults] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [currentTarget, setCurrentTarget] = useState<"jobs" | "people" | null>(null);
 
   useEffect(() => {
     const { data: sub } = supabase.auth.onAuthStateChange((event, session) => {
@@ -93,21 +100,52 @@ const Index = () => {
     setCurrentPrompt(prompt);
     setShowResults(true);
     setLoadingResults(true);
+    setConstraints(null);
+    setEvaluations(null);
     try {
+      // Se o usuário mencionar explicitamente perfis/pessoas, force o roteador para "people"
+      const lower = prompt.toLowerCase();
+      const peopleTriggers = [
+        /\bperfil(?:es)?\b/,
+        /\bpessoas?\b/,
+        /\bprofissional(?:es)?\b/,
+        /\bcandidatos?\b/,
+        /\btalentos?\b/,
+      ];
+      const forceTarget = peopleTriggers.some((re) => re.test(lower)) ? "people" : undefined;
+      const { data: sessionData } = await supabase.auth.getSession();
+      const accessToken = sessionData.session?.access_token;
       const { data, error } = await supabase.functions.invoke<ScrapeResponse>("search-router", {
-        body: { prompt },
+        body: { prompt, forceTarget },
         headers: {
-          Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY as string}`,
+          Authorization: accessToken ? `Bearer ${accessToken}` : `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY as string}`,
           apikey: import.meta.env.VITE_SUPABASE_ANON_KEY as string,
         },
       });
       if (error) {
         console.error("[Index] scrape error", error);
         setResults([]);
+        setCurrentTarget(null);
       } else {
-        console.log("[Index] scrape success", { count: data?.count });
+        console.log("[Index] scrape success", { count: data?.count, target: data?.target, decision: data?.decision, path: data?.forwardedPath });
         console.log("[Index] refine output", { refineStatus: data?.refineStatus, refinedInput: data?.refinedInput, searchId: data?.searchId });
-        setResults(Array.isArray(data?.items) ? data.items : []);
+        const rawItems = Array.isArray(data?.items) ? (data!.items as unknown as Record<string, unknown>[]) : [];
+        setCurrentTarget(data?.target ?? null);
+        const refined = data?.refinedInput;
+        const nextConstraints: SearchConstraints = {
+          refinedInput: {
+            keyword: Array.isArray(refined?.keyword) ? refined!.keyword : (
+              typeof refined?.position === 'string' && refined!.position.trim() ? [refined!.position.trim()] : []
+            ),
+            location: typeof refined?.location === 'string' ? refined!.location : undefined,
+          },
+          keywords: Array.isArray(refined?.keyword) ? refined!.keyword : undefined,
+          locationPriority: 'required',
+        };
+        const outcome = optimizeByConstraints(rawItems as RawJobItem[], nextConstraints, 10);
+        setConstraints(nextConstraints);
+        setEvaluations(outcome.evaluations);
+        setResults(outcome.items as unknown as Record<string, unknown>[]);
       }
     } catch (err) {
       console.error("[Index] scrape exception", err);
@@ -140,37 +178,92 @@ const Index = () => {
     });
 
     // Apply CSP evaluation (non-filtering, just scoring/explanations)
-    const currentConstraints: SearchConstraints | null = search.constraints || null;
-    const outcome = filterByConstraints(jobItems, currentConstraints);
+    const currentConstraints: SearchConstraints | null = search.target === 'profile' ? null : (search.constraints || null);
+    const outcome = optimizeByConstraints(jobItems, currentConstraints || undefined, 10);
 
-    // Ordena priorizando obrigatórias (mandatoryScore), depois desejáveis (optionalScore)
-    const combined = outcome.items.map((item, idx) => ({ item, eval: outcome.evaluations[idx] }));
-    combined.sort((a, b) => {
-      const am = a.eval?.mandatoryScore ?? 0;
-      const bm = b.eval?.mandatoryScore ?? 0;
-      if (bm !== am) return bm - am;
-      const ao = a.eval?.optionalScore ?? 0;
-      const bo = b.eval?.optionalScore ?? 0;
-      if (bo !== ao) return bo - ao;
-      return (b.eval?.score ?? 0) - (a.eval?.score ?? 0);
-    });
 
-    // Update state with sorted results
     setConstraints(currentConstraints);
-    setEvaluations(combined.map((c) => c.eval));
-    setResults(combined.map((c) => c.item));
+    setEvaluations(outcome.evaluations);
+    setResults(outcome.items as unknown as Record<string, unknown>[]);
     setShowResults(true);
     setLoadingResults(false);
 
     // Use the actual prompt from the saved search for display/editing
     setCurrentPrompt(search.prompt);
+    setCurrentTarget(search.target === 'profile' ? 'people' : 'jobs');
 
-    console.log('[Index] State updated - showResults: true, results count:', jobItems.length);
+    console.log('[Index] State updated - showResults: true, results count:', outcome.items.length);
   };
 
   const handleBack = () => {
     setShowResults(false);
     setCurrentPrompt("");
+  };
+
+  const exportExcel = () => {
+    if (!Array.isArray(results) || results.length === 0) return;
+    const sanitize = (s: string) => s.replace(/^\s*[`'\"]?\s*/, "").replace(/\s*[`'\"]?\s*$/, "");
+    const getStr = (v: unknown): string => {
+      if (typeof v === "string") return sanitize(v);
+      if (v && typeof v === "object") {
+        const o = v as Record<string, unknown>;
+        const t = o["linkedinText"] || o["text"] || o["name"];
+        if (typeof t === "string") return sanitize(t);
+      }
+      return "";
+    };
+    const getLocation = (obj: unknown): string => {
+      if (typeof obj === "string") return sanitize(obj);
+      if (obj && typeof obj === "object") {
+        const o = obj as Record<string, unknown>;
+        const parsed = o["parsed"] as Record<string, unknown> | undefined;
+        const txt = typeof o["linkedinText"] === "string" ? (o["linkedinText"] as string) : undefined;
+        const ptxt = parsed && typeof parsed["text"] === "string" ? (parsed["text"] as string) : undefined;
+        return sanitize(ptxt || txt || "");
+      }
+      return "";
+    };
+    const rows = results.map((raw: unknown) => {
+      const item = (raw ?? {}) as Record<string, unknown>;
+      if (currentTarget === "people") {
+        const first = getStr(item["firstName"]);
+        const last = getStr(item["lastName"]);
+        const name = (first || last) ? `${first}${first && last ? " " : ""}${last}` : (getStr(item["name"]) || getStr(item["title"]) || "");
+        const resumo = getStr(item["headline"]) || getStr(item["snippet"]) || "";
+        const directUrl = getStr(item["linkedinUrl"]) || getStr(item["profileUrl"]) || getStr(item["link"]);
+        const publicId = getStr(item["publicIdentifier"]);
+        const url = directUrl || (publicId ? `https://www.linkedin.com/in/${publicId}` : "");
+        let location = getLocation(item["location"]) || getStr(item["location"]) || "";
+        if (!location) {
+          const profLoc = (item["profileLocation"] ?? item["geo"]) as unknown;
+          location = getLocation(profLoc) || location;
+        }
+        if (!location) {
+          const currPos = Array.isArray(item["currentPosition"]) ? (item["currentPosition"] as unknown[]) : [];
+          const firstPos = (currPos[0] ?? {}) as Record<string, unknown>;
+          location = getStr(firstPos["location"]) || location;
+        }
+        const currPos = Array.isArray(item["currentPosition"]) ? (item["currentPosition"] as unknown[]) : [];
+        const firstPos = (currPos[0] ?? {}) as Record<string, unknown>;
+        const posTitle = getStr(firstPos["position"]);
+        const posCompany = getStr(firstPos["companyName"]);
+        const descricao = (posTitle || posCompany) ? `${posTitle}${posTitle && posCompany ? " · " : ""}${posCompany}` : (resumo ? resumo.slice(0, 140) : "");
+        return { Nome: name, Resumo: resumo, Localizacao: location, Descricao: descricao, LinkedIn: url };
+      }
+      const title = getStr(item["title"]) || getStr(item["position"]) || "";
+      const companyName = getStr(item["companyName"]) || getStr(item["company"]) || "";
+      const location = getStr(item["location"]) || getStr(item["city"]) || "";
+      const description = getStr(item["description"]) || getStr(item["snippet"]) || "";
+      const applyUrl = getStr(item["applyUrl"]) || getStr(item["url"]) || getStr(item["link"]) || "";
+      const postedAt = getStr(item["postedAt"]) || getStr(item["datePosted"]) || "";
+      return { Titulo: title, Empresa: companyName, Localizacao: location, Descricao: description, URL: applyUrl, Publicada: postedAt };
+    });
+    const ws = XLSX.utils.json_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, currentTarget === "people" ? "Perfis" : "Vagas");
+    const base = currentPrompt.trim() || (currentTarget === "people" ? "perfis" : "vagas");
+    const fname = `${base.replace(/\s+/g, "_")}_${currentTarget === "people" ? "perfis" : "vagas"}.xlsx`;
+    XLSX.writeFile(wb, fname);
   };
 
   if (showResults) {
@@ -193,16 +286,57 @@ const Index = () => {
           </div>
           <div className="flex items-center gap-3">
             {sessionEmail ? (
+              <>
               <Button 
                 variant="default"
                 className="h-9 px-6 bg-primary hover:bg-primary/90 text-foreground rounded-full font-medium"
-                onClick={() => {
-                  console.log('[Index] salvar click', { prompt: currentPrompt });
-                  // TODO: implementar salvar
+                disabled={saving || results.length === 0}
+                onClick={async () => {
+                  console.log('[Index] salvar click', { prompt: currentPrompt, count: results.length });
+                  try {
+                    setSaving(true);
+                    const { data: sessionData } = await supabase.auth.getSession();
+                    const accessToken = sessionData.session?.access_token;
+                    if (!accessToken) {
+                      console.error('[Index] save-search aborted: missing user access token');
+                      setSaving(false);
+                      return;
+                    }
+                    const { data, error } = await supabase.functions.invoke<{ ok: boolean; searchId?: string; count?: number }>("save-search", {
+                      body: {
+                        target: currentTarget === 'people' ? 'profile' : 'job',
+                        prompt: currentPrompt,
+                        items: results,
+                        constraints: constraints || null,
+                      },
+                      headers: {
+                        Authorization: `Bearer ${accessToken}`,
+                        apikey: import.meta.env.VITE_SUPABASE_ANON_KEY as string,
+                      },
+                    });
+                    if (error) {
+                      console.error('[Index] save-search error', error);
+                    } else {
+                      console.log('[Index] save-search success', { searchId: data?.searchId, count: data?.count });
+                    }
+                  } catch (e) {
+                    console.error('[Index] save-search exception', e);
+                  } finally {
+                    setSaving(false);
+                  }
                 }}
               >
-                Salvar
+                {saving ? 'A salvar...' : 'Salvar'}
               </Button>
+              <Button
+                variant="outline"
+                className="h-9 px-6 rounded-full font-medium"
+                disabled={results.length === 0}
+                onClick={exportExcel}
+              >
+                Exportar Excel
+              </Button>
+              </>
             ) : (
               <Link to="/auth?mode=login">
                 <Button 
@@ -219,7 +353,7 @@ const Index = () => {
         {/* Results View */}
         <div className="flex-1 flex overflow-hidden">
           <ThoughtsPanel onNewPrompt={handleNewPrompt} initialPrompt={currentPrompt} />
-          <ResultsPanel results={results} loading={loadingResults} constraints={constraints || undefined} evaluations={evaluations || undefined} />
+      <ResultsPanel results={results as unknown as RawJobItem[]} loading={loadingResults} constraints={constraints || undefined} evaluations={evaluations || undefined} target={currentTarget || undefined} />
         </div>
       </div>
     );

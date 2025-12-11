@@ -1,0 +1,202 @@
+/**
+ * @typedef {Object} User
+ * @property {string} id
+ * @property {string[]} [skillsToTeach]  // Competências que o utilizador pode ensinar
+ * @property {string[]} [skillsToLearn]  // Competências que o utilizador quer aprender
+ * @property {string[]} [softSkills]     // Soft skills do utilizador
+ * @property {{ name?: string }} [courses] // Curso do utilizador (ex: Engenharia Informática)
+ */
+
+/* -----------------------------------------------------------
+   CONFIGURAÇÕES DO SISTEMA (PESOS, LIMITES, THRESHOLDS)
+----------------------------------------------------------- */
+const DEFAULT_SOFT_SKILLS_THRESHOLD = 0.5; // Similaridade mínima de soft skills
+const DEFAULT_LIMIT = 3;                   // Nº máximo de matches sugeridos
+const CAP_TEACH_SKILLS = 3;                // Limite para normalização de skills
+
+// Pesos usados na composição final do score
+const DEFAULT_WEIGHTS = {
+  forwardTeach: 0.45, // o outro ensina algo que eu quero aprender
+  reverseTeach: 0.25, // eu ensino algo que o outro quer aprender
+  softSkills: 0.25,   // afinidade interpessoal
+  courseBonus: 0.05,  // pequeno bónus se forem do mesmo curso
+};
+
+/* -----------------------------------------------------------
+   FUNÇÕES AUXILIARES (HELPERS)
+/**
+ * Normaliza uma lista de strings e remove duplicados.
+ * Converte tudo para minúsculas, remove espaços e elimina entradas inválidas.
+ */
+function normList(list) {
+  if (!Array.isArray(list)) return [];
+  return [...new Set(
+    list
+      .map(v => (typeof v === "string" ? v.trim().toLowerCase() : null))
+      .filter(Boolean)
+  )];
+}
+
+/**
+ * Pré-processa um utilizador.
+ * Converte listas para Sets
+ * e normaliza todos os dados 
+ */
+function preprocessUser(u) {
+  return {
+    ...u,
+    _teach: new Set(normList(u.skillsToTeach)),
+    _learn: new Set(normList(u.skillsToLearn)),
+    _soft: new Set(normList(u.softSkills)),
+    _course: u?.courses?.name || null,
+  };
+}
+
+/** Conta elementos em comum entre dois Sets */
+function intersectCount(setA, setB) {
+  let count = 0;
+  for (const x of setA) if (setB.has(x)) count++;
+  return count;
+}
+
+/**
+ * Similaridade de soft skills usando o índice de Jaccard:
+ * interseção / união
+ * Retorna valor entre 0 e 1.
+ */
+function softSimilarity(setA, setB) {
+  if (!setA.size || !setB.size) return 0;
+  const inter = [...setA].filter(x => setB.has(x)).length;
+  const union = new Set([...setA, ...setB]).size;
+  return inter / union;
+}
+
+/**
+ * Normaliza contagem discreta para o intervalo [0,1],
+ * limitando por CAP_TEACH_SKILLS.
+ */
+function normalizeCount(count, cap = CAP_TEACH_SKILLS) {
+  return Math.min(count, cap) / cap;
+}
+
+/**
+ * Calcula o score final do match usando os pesos definidos.
+ * Retorna valor percentual entre 0 e 100.
+ */
+function computeScore({ fwd, rev, softSim, sameCourse, weights }) {
+  const w = { ...DEFAULT_WEIGHTS, ...weights };
+
+  const composite =
+    w.forwardTeach * normalizeCount(fwd) +
+    w.reverseTeach * normalizeCount(rev) +
+    w.softSkills * softSim +
+    w.courseBonus * (sameCourse ? 1 : 0);
+
+  return Math.round(Math.min(1, Math.max(0, composite)) * 100);
+}
+
+/**
+ * Verifica se dois utilizadores podem formar um par válido
+ * (restrições do CSP):
+ * - não podem ser a mesma pessoa
+ * - soft skills acima do threshold
+ * - tem de existir pelo menos uma via de aprendizagem
+ */
+function isValidPair(A, B, threshold) {
+  if (A.id === B.id) return false;
+
+  const softSim = softSimilarity(A._soft, B._soft);
+  if (A._soft.size && B._soft.size && softSim < threshold) return false;
+
+  const fwd = intersectCount(A._learn, B._teach);
+  const rev = intersectCount(B._learn, A._teach);
+
+  return fwd > 0 || rev > 0;
+}
+
+/* -----------------------------------------------------------
+   EXPLICAÇÃO DETALHADA DE UM MATCH (DEBUG/AUDITORIA)
+----------------------------------------------------------- */
+
+/**
+ * Explica detalhadamente um match entre A e B.
+ * Muito útil para relatório ou interface explicável.
+ */
+export function explainMatch(Araw, Braw, weights = DEFAULT_WEIGHTS) {
+  const A = preprocessUser(Araw);
+  const B = preprocessUser(Braw);
+
+  const forward = [...A._learn].filter(x => B._teach.has(x));  // B ensina → A aprende
+  const reverse = [...B._learn].filter(x => A._teach.has(x));  // A ensina → B aprende
+
+  const softSim = softSimilarity(A._soft, B._soft);
+  const sameCourse = A._course && A._course === B._course;
+
+  const score = computeScore({
+    fwd: forward.length,
+    rev: reverse.length,
+    softSim,
+    sameCourse,
+    weights,
+  });
+
+  return {
+    score,
+    components: {
+      forwardTeachSkills: forward,
+      reverseTeachSkills: reverse,
+      softSkillsSimilarity: softSim,
+      sameCourse,
+    },
+    constraints: {
+      notSameUser: A.id !== B.id,
+      softSkillsAboveThreshold: softSim >= DEFAULT_SOFT_SKILLS_THRESHOLD,
+      hasTeachLearnPath: forward.length > 0 || reverse.length > 0,
+    },
+  };
+}
+
+/* -----------------------------------------------------------
+   FUNÇÃO PRINCIPAL
+/**
+ * Sugere utilizadores ideais para o currentUser,
+ * ordenando por score descrescente.
+ */
+export function cspMatchUsers(currentUserRaw, usersRaw, options = {}) {
+  if (!currentUserRaw || !Array.isArray(usersRaw)) return [];
+
+  // Pré-processamento para acelerar matching
+  const current = preprocessUser(currentUserRaw);
+  const users = usersRaw.map(preprocessUser);
+
+  const limit = options.limit ?? DEFAULT_LIMIT;
+  const softThreshold = options.softSkillsThreshold ?? DEFAULT_SOFT_SKILLS_THRESHOLD;
+  const weights = options.weights ?? DEFAULT_WEIGHTS;
+
+  const results = [];
+
+  for (const u of users) {
+    if (!isValidPair(current, u, softThreshold)) continue;
+
+    const fwd = intersectCount(current._learn, u._teach);
+    const rev = intersectCount(u._learn, current._teach);
+    const softSim = softSimilarity(current._soft, u._soft);
+    const sameCourse = current._course && current._course === u._course;
+
+    const score = computeScore({ fwd, rev, softSim, sameCourse, weights });
+
+    results.push({
+      ...u,
+      matchScore: score,
+      matchedSkills: [...current._learn].filter(x => u._teach.has(x)),
+      matchedReverseSkills: [...u._learn].filter(x => current._teach.has(x)),
+      softSkillsSimilarity: softSim,
+      sameCourse,
+    });
+  }
+
+  // Ordena por score e devolve top N
+  return results.sort((a, b) => b.matchScore - a.matchScore).slice(0, limit);
+}
+
+export default cspMatchUsers;
