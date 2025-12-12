@@ -349,3 +349,6 @@ Deno.serve(async (req: Request) => {
     });
   }
 });
+
+
+// Resultado da api -> base de dados -> CSP 

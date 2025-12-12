@@ -1,0 +1,13 @@
+{
+  "name": "sync-service",
+  "version": "1.0.0",
+  "description": "Synchronization Worker for Distributed System",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.39.0",
+    "dotenv": "^16.3.1"
+  }
+}
