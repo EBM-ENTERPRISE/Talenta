@@ -294,6 +294,13 @@ Deno.serve(async (req: Request) => {
         ...obj,
         count,
         defaultDatasetId,
+        ...(target === "people" ? {
+          refinedInput: {
+            keyword: typeof (payload as Record<string, unknown>)?.["searchQuery"] === "string" && (payload as Record<string, unknown>)["searchQuery"] ? [String((payload as Record<string, unknown>)["searchQuery"]) ] : [],
+            location: Array.isArray((payload as Record<string, unknown>)?.["locations"]) && ((payload as Record<string, unknown>)["locations"] as unknown[]).length > 0 ? String(((payload as Record<string, unknown>)["locations"] as unknown[])[0]) : undefined,
+          },
+          refineStatus: "fallback",
+        } : {}),
       } as Record<string, unknown>;
       return new Response(JSON.stringify(envelope), { status: resp.status, headers: { "Content-Type": "application/json", ...corsHeaders, "X-Route-Target": target, "X-Route-Decision": decisionSource, "X-Route-Path": targetPath } });
     }

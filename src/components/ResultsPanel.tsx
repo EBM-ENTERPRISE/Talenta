@@ -79,7 +79,7 @@ const ResultsPanel = ({ results = [], loading = false, constraints, evaluations,
             location = getStr(firstPos['location']) || location;
           }
           if (!location && snippet) {
-            const m = snippet.match(/(?:Localidade|Localização|Location)\s*[:\-]\s*([^·|,;]+)/i);
+            const m = snippet.match(/(?:Localidade|Localização|Location)\s*[:-]\s*([^·|,;]+)/i);
             if (m && m[1]) {
               location = sanitize(m[1]);
             }
@@ -142,9 +142,7 @@ const ResultsPanel = ({ results = [], loading = false, constraints, evaluations,
           <h2 className="text-2xl font-bold text-foreground mb-2">
             {internalResults.length} {target === 'people' ? 'Perfis Encontrados' : 'Vagas Encontradas'}
           </h2>
-          <p className="text-foreground/70">
-            Resultados ordenados por proximidade
-          </p>
+          <p className="text-foreground/70">Resultados ordenados por proximidade</p>
           {constraints && (
             <div className="flex flex-wrap gap-2 mt-3">
               {constraints.refinedInput?.location && (
@@ -158,10 +156,28 @@ const ResultsPanel = ({ results = [], loading = false, constraints, evaluations,
                   <Badge variant="secondary">Palavras-chave: {kws.join(', ')}</Badge>
                 ) : null;
               })()}
+              {typeof constraints.candidateExperienceYears === 'number' && constraints.candidateExperienceYears > 0 && (
+                <Badge variant="secondary">Experiência mínima: {constraints.candidateExperienceYears} anos</Badge>
+              )}
               {Array.isArray(constraints.mustHaveSkills) && constraints.mustHaveSkills!.length > 0 && (
                 <Badge variant="secondary">Competências: {constraints.mustHaveSkills!.join(', ')}</Badge>
               )}
             </div>
+          )}
+          {constraints && (
+            <p className="text-foreground/60 text-sm mt-2">
+              Critérios aplicados: {
+                (() => {
+                  const parts: string[] = [];
+                  const kws = (constraints.keywords && constraints.keywords.length > 0) ? constraints.keywords : (constraints.refinedInput?.keyword || []);
+                  if (Array.isArray(kws) && kws.length > 0) parts.push(`keywords = ${kws.join(', ')}`);
+                  if (constraints.refinedInput?.location) parts.push(`location = ${constraints.refinedInput.location}`);
+                  if (typeof constraints.candidateExperienceYears === 'number') parts.push(`minYears = ${constraints.candidateExperienceYears}`);
+                  if (Array.isArray(constraints.mustHaveSkills) && constraints.mustHaveSkills.length > 0) parts.push(`skills ≥${Math.max(1, Number(constraints.kTechMin ?? (constraints.mustHaveSkills.length > 0 ? 1 : 0)))} de [${constraints.mustHaveSkills.join(', ')}]`);
+                  return parts.length > 0 ? parts.join(' · ') : 'nenhum';
+                })()
+              }
+            </p>
           )}
         </div>
 

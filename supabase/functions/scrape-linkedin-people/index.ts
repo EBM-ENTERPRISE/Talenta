@@ -446,7 +446,7 @@ Deno.serve(async (req: Request) => {
           await upsertEducation(items, profileIds);
         }
       }
-    } catch (_e) {}
+    } catch (_e) { void 0; }
     return new Response(JSON.stringify({ status, datasetId, items, count, searchId }), {
       status: 200,
       headers: { "Content-Type": "application/json", ...corsHeaders },

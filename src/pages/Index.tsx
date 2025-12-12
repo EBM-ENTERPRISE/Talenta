@@ -4,12 +4,12 @@ import * as XLSX from "xlsx";
 import { Link } from "react-router-dom";
 import TalentaLogo from "@/components/TalentaLogo";
 import SearchInput from "@/components/SearchInput";
-import ActionButtons from "@/components/ActionButtons";
 import ThoughtsPanel from "@/components/ThoughtsPanel";
 import ResultsPanel from "@/components/ResultsPanel";
 import SearchSidebar from "@/components/SearchSidebar";
 import { supabase } from "@/lib/utils";
-import { filterByConstraints, optimizeByConstraints, type SearchConstraints, type CspEval } from "@/lib/applyCspToResults";
+import { filterByConstraints, optimizeByConstraints, optimizeProfilesByConstraints, type SearchConstraints, type CspEval } from "@/lib/applyCspToResults";
+import type { RawProfileItem } from "@/lib/constraints";
 
 type RawJobItem = {
   title?: string;
@@ -132,20 +132,41 @@ const Index = () => {
         const rawItems = Array.isArray(data?.items) ? (data!.items as unknown as Record<string, unknown>[]) : [];
         setCurrentTarget(data?.target ?? null);
         const refined = data?.refinedInput;
-        const nextConstraints: SearchConstraints = {
-          refinedInput: {
-            keyword: Array.isArray(refined?.keyword) ? refined!.keyword : (
-              typeof refined?.position === 'string' && refined!.position.trim() ? [refined!.position.trim()] : []
-            ),
-            location: typeof refined?.location === 'string' ? refined!.location : undefined,
-          },
-          keywords: Array.isArray(refined?.keyword) ? refined!.keyword : undefined,
-          locationPriority: 'required',
-        };
-        const outcome = optimizeByConstraints(rawItems as RawJobItem[], nextConstraints, 10);
-        setConstraints(nextConstraints);
-        setEvaluations(outcome.evaluations);
-        setResults(outcome.items as unknown as Record<string, unknown>[]);
+        if ((data?.target ?? null) === 'people') {
+          const nextConstraints: SearchConstraints = {
+            refinedInput: {
+              keyword: Array.isArray(refined?.keyword) ? refined!.keyword : (
+                typeof refined?.search === 'string' && refined!.search.trim() ? [refined!.search.trim()] : (
+                  typeof refined?.position === 'string' && refined!.position.trim() ? [refined!.position.trim()] : []
+                )
+              ),
+              location: typeof refined?.location === 'string' ? refined!.location : undefined,
+            },
+            keywords: Array.isArray(refined?.keyword) ? refined!.keyword : undefined,
+            locationPriority: 'required',
+            candidateExperienceYears: extractMinYearsFromPrompt(prompt) ?? undefined,
+          };
+          const outcome = optimizeProfilesByConstraints(rawItems as unknown as RawProfileItem[], nextConstraints, 10);
+          setConstraints(nextConstraints);
+          setEvaluations(outcome.evaluations);
+          setResults(outcome.items as unknown as Record<string, unknown>[]);
+        } else {
+          const nextConstraints: SearchConstraints = {
+            refinedInput: {
+              keyword: Array.isArray(refined?.keyword) ? refined!.keyword : (
+                typeof refined?.position === 'string' && refined!.position.trim() ? [refined!.position.trim()] : []
+              ),
+              location: typeof refined?.location === 'string' ? refined!.location : undefined,
+            },
+            keywords: Array.isArray(refined?.keyword) ? refined!.keyword : undefined,
+            locationPriority: 'required',
+            candidateExperienceYears: extractMinYearsFromPrompt(prompt) ?? undefined,
+          };
+          const outcome = optimizeByConstraints(rawItems as RawJobItem[], nextConstraints, 10);
+          setConstraints(nextConstraints);
+          setEvaluations(outcome.evaluations);
+          setResults(outcome.items as unknown as Record<string, unknown>[]);
+        }
       }
     } catch (err) {
       console.error("[Index] scrape exception", err);
@@ -178,8 +199,12 @@ const Index = () => {
     });
 
     // Apply CSP evaluation (non-filtering, just scoring/explanations)
-    const currentConstraints: SearchConstraints | null = search.target === 'profile' ? null : (search.constraints || null);
-    const outcome = optimizeByConstraints(jobItems, currentConstraints || undefined, 10);
+    const yearsFromPrompt = extractMinYearsFromPrompt(search.prompt);
+    const baseCons = search.constraints || null;
+    const currentConstraints: SearchConstraints | null = baseCons ? { ...baseCons, candidateExperienceYears: yearsFromPrompt ?? baseCons?.candidateExperienceYears } : (yearsFromPrompt ? { candidateExperienceYears: yearsFromPrompt } as SearchConstraints : null);
+    const outcome = (search.target === 'profile')
+      ? optimizeProfilesByConstraints(jobItems as unknown as RawProfileItem[], currentConstraints || undefined, 10)
+      : optimizeByConstraints(jobItems, currentConstraints || undefined, 10);
 
 
     setConstraints(currentConstraints);
@@ -202,7 +227,7 @@ const Index = () => {
 
   const exportExcel = () => {
     if (!Array.isArray(results) || results.length === 0) return;
-    const sanitize = (s: string) => s.replace(/^\s*[`'\"]?\s*/, "").replace(/\s*[`'\"]?\s*$/, "");
+    const sanitize = (s: string) => s.replace(/^\s*[`'"]?\s*/, "").replace(/\s*[`'"]?\s*$/, "");
     const getStr = (v: unknown): string => {
       if (typeof v === "string") return sanitize(v);
       if (v && typeof v === "object") {
@@ -428,8 +453,7 @@ const Index = () => {
           {/* Search Input */}
           <SearchInput onSubmit={handleSubmit} />
 
-          {/* Action Buttons */}
-          <ActionButtons />
+          {/* Action Buttons removidos */}
         </div>
       </main>
 
@@ -444,3 +468,17 @@ const Index = () => {
 };
 
 export default Index;
+  const extractMinYearsFromPrompt = (text: string): number | null => {
+    const t = text.toLowerCase();
+    const m = t.match(/(\d+)\s*\+?\s*(anos|year)/);
+    if (m) {
+      const n = parseInt(m[1], 10);
+      return Number.isFinite(n) ? n : null;
+    }
+    const r = t.match(/(\d+)\s*(a|-|–|—)\s*(\d+)\s*anos/);
+    if (r) {
+      const n = parseInt(r[1], 10);
+      return Number.isFinite(n) ? n : null;
+    }
+    return null;
+  };
