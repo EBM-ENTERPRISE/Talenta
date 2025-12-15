@@ -1,0 +1,82 @@
+version: '3.8'
+
+services:
+  # --- Load Balancer ---
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "9090:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - backend-1
+      - backend-2
+      - frontend-1
+      - frontend-2
+
+  # --- Backend Services ---
+  backend-1:
+    build: ./backend
+    ports:
+      - "3061:3000"
+    environment:
+      - PORT=3000
+      - SERVICE_NAME=Backend-1
+      - SUPABASE_URL=https://rnininxlmxdmcjooqwkc.supabase.co
+      - SUPABASE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJuaW5pbnhsbXhkbWNqb29xd2tjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTk3MzM0NjcsImV4cCI6MjA3NTMwOTQ2N30.u3CByXWF-0KYXwiG0B8xp8_EfsCGDBXqh5oWFDBUPD8
+      - PEER_URL=http://backend-2:3000
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+
+  backend-2:
+    build: ./backend
+    ports:
+      - "3062:3000"
+    environment:
+      - PORT=3000
+      - SERVICE_NAME=Backend-2
+      - SUPABASE_URL=https://yvniowvaxuupfwgknzvy.supabase.co
+      # Edge Functions for Backend 2:
+      # - /functions/v1/save-search
+      # - /functions/v1/scrape-linkedin-jobs
+      # - /functions/v1/scrape-linkedin-people
+      # - /functions/v1/search-router
+      - SUPABASE_KEY=sb_publishable_NRNv47SPp5eszqGxrwzjpw_NoZo7ERe
+      - PEER_URL=http://backend-1:3000
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+
+  # --- Frontend Services ---
+  frontend-1:
+    build:
+      context: ../
+      dockerfile: Dockerfile.frontend
+      args:
+        # Point to the local backend proxy (Backend-1) running on port 3061 (host machine)
+        # Note: Since this is built, 'localhost' refers to the browser's machine, which works for dev.
+        - VITE_SUPABASE_URL=http://localhost:3061
+        - VITE_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJuaW5pbnhsbXhkbWNqb29xd2tjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTk3MzM0NjcsImV4cCI6MjA3NTMwOTQ2N30.u3CByXWF-0KYXwiG0B8xp8_EfsCGDBXqh5oWFDBUPD8
+    ports:
+      - "3051:80"
+    environment:
+      - PORT=80
+
+  frontend-2:
+    build:
+      context: ../
+      dockerfile: Dockerfile.frontend
+      args:
+        # Point to the local backend proxy (Backend-2) running on port 3062 (host machine)
+        - VITE_SUPABASE_URL=http://localhost:3062
+        - VITE_SUPABASE_ANON_KEY=sb_publishable_NRNv47SPp5eszqGxrwzjpw_NoZo7ERe
+    ports:
+      - "3052:80"
+    environment:
+      - PORT=80
+      - FRONTEND_ID=Node-2

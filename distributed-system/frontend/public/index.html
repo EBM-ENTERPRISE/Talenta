@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Distributed System Demo</title>
+    <style>
+        body { font-family: sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; background: #f0f0f0; }
+        .card { background: white; padding: 20px; margin-bottom: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .status { padding: 10px; border-radius: 4px; margin-bottom: 10px; font-weight: bold; }
+        .backend-1 { color: #2563eb; }
+        .backend-2 { color: #dc2626; }
+        button { padding: 10px 20px; background: #000; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        input { padding: 10px; width: 70%; margin-right: 10px; }
+        pre { background: #eee; padding: 10px; overflow-x: auto; }
+    </style>
+</head>
+<body>
+    <h1>Distributed System Control Plane</h1>
+    
+    <div class="card">
+        <h2>Frontend Node Info</h2>
+        <div id="frontend-info">Loading...</div>
+    </div>
+
+    <div class="card">
+        <h2>Write Data (Replication Demo)</h2>
+        <div style="display: flex;">
+            <input type="text" id="input-data" placeholder="Enter data to replicate...">
+            <button onclick="sendData()">Write to Cluster</button>
+        </div>
+        <div id="write-result"></div>
+    </div>
+
+    <div class="card">
+        <h2>Read Data (Load Balancing Demo)</h2>
+        <button onclick="fetchData()">Refresh Data</button>
+        <p>Repeatedly clicking Refresh should show different "Service" names if LB is working.</p>
+        <div id="data-display"></div>
+    </div>
+
+    <script>
+        const API_URL = 'http://localhost:9090'; // Nginx Load Balancer
+
+        // Get Frontend Identity
+        fetch('/info').then(r => r.json()).then(d => {
+            document.getElementById('frontend-info').innerHTML = `Serving from Frontend Node: <b>${d.frontend_id}</b>`;
+        });
+
+        async function sendData() {
+            const content = document.getElementById('input-data').value;
+            if (!content) return;
+            
+            document.getElementById('write-result').innerText = 'Writing...';
+            
+            try {
+                const res = await fetch(`${API_URL}/api/data`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ content })
+                });
+                const data = await res.json();
+                document.getElementById('write-result').innerHTML = `
+                    <p><b>Handled By:</b> ${data.service}</p>
+                    <p><b>DB Status:</b> ${data.db_status}</p>
+                    <p><b>Replication Status:</b> ${data.replication_status}</p>
+                `;
+                fetchData();
+            } catch (e) {
+                document.getElementById('write-result').innerText = 'Error: ' + e.message;
+            }
+        }
+
+        async function fetchData() {
+            try {
+                const res = await fetch(`${API_URL}/api/data`);
+                const data = await res.json();
+                
+                let html = `<h3 class="${data.service === 'Backend-1' ? 'backend-1' : 'backend-2'}">Response from: ${data.service}</h3>`;
+                
+                if (data.data && data.data.length > 0) {
+                    html += '<ul>' + data.data.map(item => `<li>${item.content} (ID: ${item.id})</li>`).join('') + '</ul>';
+                } else {
+                    html += '<p>No data found.</p>';
+                }
+                
+                if (data.message) {
+                    html += `<p><i>${data.message}</i></p>`;
+                }
+
+                document.getElementById('data-display').innerHTML = html;
+            } catch (e) {
+                document.getElementById('data-display').innerText = 'Error fetching data (Service might be down): ' + e.message;
+            }
+        }
+
+        // Initial fetch
+        fetchData();
+    </script>
+</body>
+</html>
