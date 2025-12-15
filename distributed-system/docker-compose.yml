@@ -23,6 +23,9 @@ services:
       - PORT=3000
       - SERVICE_NAME=Backend-1
       - SUPABASE_URL=https://rnininxlmxdmcjooqwkc.supabase.co
+      # Force usage of Backend 1's Edge Functions (as requested)
+      - EDGE_FUNCTION_URL=https://rnininxlmxdmcjooqwkc.supabase.co
+      - EDGE_FUNCTION_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJuaW5pbnhsbXhkbWNqb29xd2tjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTk3MzM0NjcsImV4cCI6MjA3NTMwOTQ2N30.u3CByXWF-0KYXwiG0B8xp8_EfsCGDBXqh5oWFDBUPD8
       - SUPABASE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJuaW5pbnhsbXhkbWNqb29xd2tjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTk3MzM0NjcsImV4cCI6MjA3NTMwOTQ2N30.u3CByXWF-0KYXwiG0B8xp8_EfsCGDBXqh5oWFDBUPD8
       - PEER_URL=http://backend-2:3000
     deploy:
@@ -39,11 +42,9 @@ services:
       - PORT=3000
       - SERVICE_NAME=Backend-2
       - SUPABASE_URL=https://yvniowvaxuupfwgknzvy.supabase.co
-      # Edge Functions for Backend 2:
-      # - /functions/v1/save-search
-      # - /functions/v1/scrape-linkedin-jobs
-      # - /functions/v1/scrape-linkedin-people
-      # - /functions/v1/search-router
+      # Force usage of Backend 1's Edge Functions (as requested)
+      - EDGE_FUNCTION_URL=https://rnininxlmxdmcjooqwkc.supabase.co
+      - EDGE_FUNCTION_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJuaW5pbnhsbXhkbWNqb29xd2tjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTk3MzM0NjcsImV4cCI6MjA3NTMwOTQ2N30.u3CByXWF-0KYXwiG0B8xp8_EfsCGDBXqh5oWFDBUPD8
       - SUPABASE_KEY=sb_publishable_NRNv47SPp5eszqGxrwzjpw_NoZo7ERe
       - PEER_URL=http://backend-1:3000
     deploy:
