@@ -49,16 +49,13 @@ export function solve(
 
   function backtrack(i: number, current: Assignment) {
     if (i >= variables.length) {
-      // Check final constraints
-      const allOk = constraints.every((c) => safeCheck(c, current));
-      if (allOk) solutions.push({ ...current });
+      if (checkMandatory(current, constraints)) solutions.push({ ...current });
       return;
     }
     const v = variables[i];
     for (const val of v.domain) {
       const next: Assignment = { ...current, [v.name]: val };
-      // Early pruning using constraints that only touch assigned vars
-      const okSoFar = constraints.every((c) => safeCheck(c, next));
+      const okSoFar = checkMandatoryPartial(next, constraints);
       if (okSoFar) backtrack(i + 1, next);
     }
   }
@@ -159,6 +156,19 @@ function checkMandatory(assign: Assignment, constraints: Constraint<Assignment>[
   return true;
 }
 
+function checkMandatoryPartial(assign: Assignment, constraints: Constraint<Assignment>[]): boolean {
+  for (const c of constraints) {
+    const mandatory = c.mandatory ?? true;
+    if (!mandatory) continue;
+    try {
+      if (!c.check(assign as Assignment)) return false;
+    } catch (_) {
+      continue;
+    }
+  }
+  return true;
+}
+
 export function forwardCheckingSolve(
   variables: Variable[],
   constraints: Constraint<Assignment>[],
@@ -190,7 +200,7 @@ export function forwardCheckingSolve(
       const kept: unknown[] = [];
       for (const v of dom) {
         const a = { ...assign, [n]: v };
-        if (checkMandatory(a, constraints)) kept.push(v);
+        if (checkMandatoryPartial(a, constraints)) kept.push(v);
       }
       domains[n] = kept;
       if (kept.length === 0) return false;
@@ -220,7 +230,7 @@ export function forwardCheckingSolve(
   }
 
   const initialDomains = cloneDomains(baseDomains);
-  prune({}, initialDomains);
+  if (!prune({}, initialDomains)) return [];
   backtrack({}, initialDomains);
   return solutions;
 }
