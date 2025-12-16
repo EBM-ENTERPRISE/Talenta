@@ -103,7 +103,6 @@ const Index = () => {
     setConstraints(null);
     setEvaluations(null);
     try {
-      // Se o usuário mencionar explicitamente perfis/pessoas, force o roteador para "people"
       const lower = prompt.toLowerCase();
       const peopleTriggers = [
         /\bperfil(?:es)?\b/,
@@ -112,7 +111,14 @@ const Index = () => {
         /\bcandidatos?\b/,
         /\btalentos?\b/,
       ];
-      const forceTarget = peopleTriggers.some((re) => re.test(lower)) ? "people" : undefined;
+      const roleTokens = [
+        "programador","desenvolvedor","developer","engenheiro de software","software engineer",
+        "frontend","backend","fullstack","qa","tester","mobile","ios","android",
+        "data scientist","cientista de dados","engenheiro de dados","devops","sre"
+      ];
+      const hasRole = roleTokens.some(w => lower.includes(w));
+      const hasLocation = /\b(em|in)\s+[a-zà-úãõç\- ]+/.test(lower);
+      const forceTarget = peopleTriggers.some((re) => re.test(lower)) ? "people" : (hasRole && hasLocation ? "jobs" : undefined);
       const { data: sessionData } = await supabase.auth.getSession();
       const accessToken = sessionData.session?.access_token;
       const { data, error } = await supabase.functions.invoke<ScrapeResponse>("search-router", {

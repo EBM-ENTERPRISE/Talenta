@@ -113,9 +113,18 @@ function heuristicTarget(prompt: string): RouteTarget {
     "vaga","vagas","emprego","trabalho","oportunidade","job","posição","posicao","contrata","hiring","opening",
     "salário","salario","benefícios","beneficios","clt","pj","full-time","part-time","candidatar","aplicar","apply"
   ];
+  const roleTokens = [
+    "programador","desenvolvedor","developer","engenheiro de software","software engineer",
+    "frontend","backend","fullstack","qa","tester","mobile","ios","android",
+    "data scientist","cientista de dados","engenheiro de dados","devops","sre"
+  ];
   const peopleScore = peopleHints.reduce((acc, w) => acc + (p.includes(w) ? 1 : 0), 0);
   const jobScore = jobHints.reduce((acc, w) => acc + (p.includes(w) ? 1 : 0), 0);
   if (jobScore > peopleScore) return "jobs";
+  const hasRole = roleTokens.some(w => p.includes(w));
+  const hasLocation = /\b(em|in)\s+[a-zà-úãõç\- ]+/.test(p);
+  if (hasRole && hasLocation) return "jobs";
+  if (hasRole && peopleScore === 0) return "jobs";
   return "people";
 }
 
@@ -166,7 +175,8 @@ async function classifyTarget(prompt: string): Promise<RouteTarget> {
     const t = parsed?.target;
     if (t === "people" || t === "jobs") {
       const { peopleScore, jobScore, hasJobHint } = computeScores(prompt);
-      if (t === "jobs" && !hasJobHint && peopleScore >= jobScore) return "people";
+      const hasRoleWithLocation = /\b(em|in)\s+[a-zà-úãõç\- ]+/.test(prompt.toLowerCase()) && /programador|desenvolvedor|developer|engenheiro de software|software engineer|frontend|backend|fullstack|qa|tester|mobile|ios|android|data scientist|cientista de dados|engenheiro de dados|devops|sre/.test(prompt.toLowerCase());
+      if (t === "jobs" && !hasJobHint && peopleScore >= jobScore && !hasRoleWithLocation) return "people";
       return t;
     }
   } catch (e) {

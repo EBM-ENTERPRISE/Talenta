@@ -4,9 +4,15 @@ const bodyParser = require('body-parser');
 const { createClient } = require('@supabase/supabase-js');
 const axios = require('axios');
 const { createProxyMiddleware } = require('http-proxy-middleware');
+const crypto = require('crypto');
 
 const app = express();
 app.use(cors());
+
+app.use('/api', (req, res, next) => {
+    req.url = '/' + req.url.replace(/^\//, '');
+    next();
+});
 
 // DEBUG: Log all requests
 app.use((req, res, next) => {
@@ -29,6 +35,29 @@ console.log(`Connecting to Supabase: ${SUPABASE_URL}`);
 // Initialize Supabase Client
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
+function getProjectRefFromApiKey(key) {
+  try {
+    if (!key) return null;
+    if (key.startsWith('sb_publishable_')) {
+      return 'yvniowvaxuupfwgknzvy';
+    }
+    const payload = key.split('.')[1];
+    if (!payload) return null;
+    const json = JSON.parse(Buffer.from(payload, 'base64').toString('utf8'));
+    return json.ref || null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function chooseSupabaseTarget(req) {
+  const incomingKey = req.headers['apikey'] || req.headers['x-apikey'] || null;
+  const ref = getProjectRefFromApiKey(incomingKey);
+  if (ref === 'rnininxlmxdmcjooqwkc') return 'https://rnininxlmxdmcjooqwkc.supabase.co';
+  if (ref === 'yvniowvaxuupfwgknzvy') return 'https://yvniowvaxuupfwgknzvy.supabase.co';
+  return SUPABASE_URL;
+}
+
 // Health Check
 app.get('/health', (req, res) => {
   res.status(200).json({ status: 'ok', service: SERVICE_NAME });
@@ -37,6 +66,35 @@ app.get('/health', (req, res) => {
 // --- REPLICATION LOGIC ---
 const TABLE_NAME = 'searches';
 const jsonParser = bodyParser.json();
+
+async function applyIdempotency(supabaseClient, opId, source) {
+  const { data } = await supabaseClient
+    .from('replication_operations')
+    .select('operation_id')
+    .eq('operation_id', opId)
+    .maybeSingle();
+  if (data && data.operation_id) {
+    return false;
+  }
+  await supabaseClient
+    .from('replication_operations')
+    .insert({ operation_id: opId, source });
+  return true;
+}
+
+async function replicateToPeer(url, body, headers) {
+  let delay = 250;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      await axios.post(url, body, { headers, timeout: 2000 });
+      return true;
+    } catch (e) {
+      await new Promise(r => setTimeout(r, delay));
+      delay *= 2;
+    }
+  }
+  return false;
+}
 
 // --- EDGE FUNCTION INTERCEPTION (For Backend 2) ---
 if (SERVICE_NAME === 'Backend-2') {
@@ -52,17 +110,15 @@ if (SERVICE_NAME === 'Backend-2') {
             target: PEER_URL || 'http://backend-1:3000',
             changeOrigin: true,
             pathRewrite: (path, req) => {
-                // Express strips the mount path, so 'path' here is relative (e.g., '/' or '/?query=...')
-                // We need to reconstruct the full path for the target
                 const queryString = path.includes('?') ? path.substring(path.indexOf('?')) : '';
                 return `/functions/v1/${funcName}${queryString}`;
             },
-            headers: {
-                Authorization: `Bearer ${BACKEND_1_ANON_KEY}`,
-                apikey: BACKEND_1_ANON_KEY
-            },
             onProxyReq: (proxyReq, req, res) => {
                 console.log(`[${SERVICE_NAME}] Proxying function ${funcName} to Backend 1 (${PEER_URL})`);
+                proxyReq.setHeader('apikey', BACKEND_1_ANON_KEY);
+                if (req.headers.authorization) {
+                    proxyReq.setHeader('authorization', req.headers.authorization);
+                }
             }
         }));
     });
@@ -104,6 +160,13 @@ if (SERVICE_NAME === 'Backend-2') {
             };
             if (userId) {
                 searchPayload.user_id = userId;
+            }
+
+            const opId = req.headers['x-operation-id'] || crypto.randomUUID();
+            const replicatedFrom = req.headers['x-replicated-from'] || null;
+            const proceed = await applyIdempotency(scopedSupabase, String(opId), replicatedFrom || SERVICE_NAME);
+            if (!proceed) {
+                return res.json({ ok: true, dedup: true });
             }
 
             const { data: searchData, error: searchError } = await scopedSupabase
@@ -196,6 +259,23 @@ if (SERVICE_NAME === 'Backend-2') {
                 console.error(`[${SERVICE_NAME}] Exception ingesting items:`, ingestEx);
             }
 
+            const outboxInsert = await supabase
+              .from('replication_outbox')
+              .insert({ operation_id: String(opId), endpoint: '/functions/v1/save-search', method: 'POST', payload: req.body, headers: { authorization: authHeader || null } })
+              .select('id')
+              .single();
+
+            if (!replicatedFrom && PEER_URL) {
+              const headers = { Authorization: authHeader || '', apikey: SUPABASE_KEY, 'X-Operation-Id': String(opId), 'X-Replicated-From': SERVICE_NAME };
+              const ok = await replicateToPeer(`${PEER_URL}/functions/v1/save-search`, req.body, headers);
+              if (ok && outboxInsert.data && outboxInsert.data.id) {
+                await supabase
+                  .from('replication_outbox')
+                  .update({ status: 'sent', attempts: 1 })
+                  .eq('id', outboxInsert.data.id);
+              }
+            }
+
             res.json({ ok: true, searchId: searchData.id, count: items?.length || 0 });
         } catch (err) {
             console.error(`[${SERVICE_NAME}] Local save-search error:`, err);
@@ -210,6 +290,11 @@ if (SERVICE_NAME === 'Backend-2') {
     console.log(`[${SERVICE_NAME}] Configuring generic proxy to ${SUPABASE_URL}`);
     const genericProxy = createProxyMiddleware({
         target: SUPABASE_URL,
+        router: (req) => {
+            const target = chooseSupabaseTarget(req);
+            console.log(`[${SERVICE_NAME}] Functions router target -> ${target}`);
+            return target;
+        },
         changeOrigin: true,
         pathRewrite: (path, req) => {
             // Reconstruct path for Supabase Edge Functions
@@ -230,15 +315,85 @@ if (SERVICE_NAME === 'Backend-2') {
         },
         onProxyReq: (proxyReq, req, res) => {
              console.log(`[${SERVICE_NAME}] Proxying generic request to ${SUPABASE_URL}/functions/v1${req.path}`);
-             // Ensure Host header matches the target Supabase project
              const targetHost = new URL(SUPABASE_URL).host;
              proxyReq.setHeader('Host', targetHost);
+             const incomingKey = req.headers['apikey'] || req.headers['x-apikey'];
+             proxyReq.setHeader('apikey', incomingKey || SUPABASE_KEY);
+             if (req.headers.authorization) {
+               proxyReq.setHeader('authorization', req.headers.authorization);
+             }
         }
     });
 
-    // Mount on /functions/v1 so it handles calls like /functions/v1/search-router
     app.use('/functions/v1', genericProxy);
 }
+
+// Ensure apikey on OAuth authorize (browser GET lacks headers)
+app.get(['/auth/v1/authorize', '/api/auth/v1/authorize'], async (req, res) => {
+  try {
+    const params = new URLSearchParams(req.query);
+    if (!params.has('apikey')) params.set('apikey', SUPABASE_KEY);
+    const target = `${SUPABASE_URL}/auth/v1/authorize?${params.toString()}`;
+    console.log(`[${SERVICE_NAME}] OAuth authorize redirect -> ${target}`);
+    res.redirect(target);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/functions/v1/save-search', jsonParser, async (req, res, next) => {
+  if (SERVICE_NAME === 'Backend-2') {
+    return next();
+  }
+  const authHeader = req.headers.authorization;
+  const scopedSupabase = authHeader 
+    ? createClient(SUPABASE_URL, SUPABASE_KEY, { global: { headers: { Authorization: authHeader } } })
+    : supabase;
+  try {
+    let userId = null;
+    if (authHeader) {
+      const { data: { user } } = await scopedSupabase.auth.getUser();
+      if (user) {
+        userId = user.id;
+      }
+    }
+    const { target, prompt, items, constraints } = req.body;
+    const payload = { prompt, target, status: 'done', constraints: constraints || {} };
+    if (userId) {
+      payload.user_id = userId;
+    }
+    const opId = req.headers['x-operation-id'] || crypto.randomUUID();
+    const replicatedFrom = req.headers['x-replicated-from'] || null;
+    const proceed = await applyIdempotency(scopedSupabase, String(opId), replicatedFrom || SERVICE_NAME);
+    if (!proceed) {
+      return res.json({ ok: true, dedup: true });
+    }
+    const { data: searchData, error: searchError } = await scopedSupabase
+      .from('searches')
+      .insert(payload)
+      .select()
+      .single();
+    if (searchError) throw searchError;
+    const outboxInsert = await supabase
+      .from('replication_outbox')
+      .insert({ operation_id: String(opId), endpoint: '/functions/v1/save-search', method: 'POST', payload: req.body, headers: { authorization: authHeader || null } })
+      .select('id')
+      .single();
+    if (!replicatedFrom && PEER_URL) {
+      const headers = { Authorization: authHeader || '', apikey: SUPABASE_KEY, 'X-Operation-Id': String(opId), 'X-Replicated-From': SERVICE_NAME };
+      const ok = await replicateToPeer(`${PEER_URL}/functions/v1/save-search`, req.body, headers);
+      if (ok && outboxInsert.data && outboxInsert.data.id) {
+        await supabase
+          .from('replication_outbox')
+          .update({ status: 'sent', attempts: 1 })
+          .eq('id', outboxInsert.data.id);
+      }
+    }
+    res.json({ ok: true, searchId: searchData.id, count: items?.length || 0 });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 app.get('/internal/sync-pull', jsonParser, async (req, res) => {
     try {
@@ -260,17 +415,48 @@ app.get('/internal/sync-pull', jsonParser, async (req, res) => {
     }
 });
 
+app.get('/replication/status', async (req, res) => {
+  try {
+    const { data: pending } = await supabase
+      .from('replication_outbox')
+      .select('id')
+      .eq('status', 'pending');
+    const { data: sent } = await supabase
+      .from('replication_outbox')
+      .select('id')
+      .eq('status', 'sent');
+    res.json({ pending: Array.isArray(pending) ? pending.length : 0, sent: Array.isArray(sent) ? sent.length : 0, service: SERVICE_NAME });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // --- PROXY LOGIC ---
 // Forward everything else to Supabase
 app.use('/', createProxyMiddleware({
     target: SUPABASE_URL,
+    router: (req) => {
+        const target = chooseSupabaseTarget(req);
+        console.log(`[${SERVICE_NAME}] Router target -> ${target} for ${req.url}`);
+        return target;
+    },
     changeOrigin: true,
     ws: true,
     logLevel: 'debug',
     onProxyReq: (proxyReq, req, res) => {
-        // Add auth header if missing or modify if needed
-        // But usually the client sends the Key
         console.log(`[${SERVICE_NAME}] Proxying ${req.method} ${req.url} to Supabase`);
+        const isAuth = (req.url || '').startsWith('/auth/v1/');
+        const incomingKey = req.headers['apikey'] || req.headers['x-apikey'];
+        proxyReq.setHeader('apikey', incomingKey || SUPABASE_KEY);
+        if (isAuth) {
+            if (req.headers.authorization) {
+                proxyReq.setHeader('authorization', req.headers.authorization);
+            } else {
+                proxyReq.removeHeader && proxyReq.removeHeader('authorization');
+            }
+        } else {
+            proxyReq.setHeader('authorization', `Bearer ${SUPABASE_KEY}`);
+        }
     }
 }));
 
@@ -323,7 +509,40 @@ async function runSyncLoop() {
     }, 5000); // Check every 5 seconds
 }
 
+async function runOutboxWorker() {
+  if (!PEER_URL) return;
+  setInterval(async () => {
+    try {
+      const { data } = await supabase
+        .from('replication_outbox')
+        .select('*')
+        .eq('status', 'pending')
+        .lt('attempts', 5)
+        .order('created_at', { ascending: true })
+        .limit(10);
+      if (Array.isArray(data)) {
+        for (const evt of data) {
+          const headers = { Authorization: (evt.headers && evt.headers.authorization) || '', apikey: SUPABASE_KEY, 'X-Operation-Id': evt.operation_id, 'X-Replicated-From': SERVICE_NAME };
+          const ok = await replicateToPeer(`${PEER_URL}${evt.endpoint}`, evt.payload, headers);
+          if (ok) {
+            await supabase
+              .from('replication_outbox')
+              .update({ status: 'sent', attempts: (evt.attempts || 0) + 1 })
+              .eq('operation_id', evt.operation_id);
+          } else {
+            await supabase
+              .from('replication_outbox')
+              .update({ attempts: (evt.attempts || 0) + 1 })
+              .eq('operation_id', evt.operation_id);
+          }
+        }
+      }
+    } catch (_) {}
+  }, 5000);
+}
+
 app.listen(PORT, () => {
   console.log(`${SERVICE_NAME} listening on port ${PORT}`);
   runSyncLoop();
+  runOutboxWorker();
 });
