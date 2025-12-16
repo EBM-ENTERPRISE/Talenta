@@ -49,7 +49,7 @@ if (SERVICE_NAME === 'Backend-2') {
     
     functionsToProxy.forEach(funcName => {
         app.use(`/functions/v1/${funcName}`, createProxyMiddleware({
-            target: PEER_URL || 'http://backend-1:3000',
+            target: BACKEND_1_SUPABASE_URL,
             changeOrigin: true,
             pathRewrite: (path, req) => {
                 // Express strips the mount path, so 'path' here is relative (e.g., '/' or '/?query=...')
@@ -62,7 +62,7 @@ if (SERVICE_NAME === 'Backend-2') {
                 apikey: BACKEND_1_ANON_KEY
             },
             onProxyReq: (proxyReq, req, res) => {
-                console.log(`[${SERVICE_NAME}] Proxying function ${funcName} to Backend 1 (${PEER_URL})`);
+                console.log(`[${SERVICE_NAME}] Proxying function ${funcName} to Backend 1`);
             }
         }));
     });

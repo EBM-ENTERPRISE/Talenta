@@ -64,6 +64,7 @@ type SearchRecord = {
   status: "pending" | "running" | "done" | "failed";
   created_at: string;
   constraints?: {
+    candidateExperienceYears: number;
     count?: number;
     refinedInput?: {
       keyword?: string[];

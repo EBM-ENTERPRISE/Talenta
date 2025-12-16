@@ -1,0 +1,1 @@
+cd distributed-system && docker compose up -d --build   
