@@ -25,6 +25,24 @@ const Auth = () => {
     setIsLogin(searchParams.get("mode") !== "register");
   }, [searchParams]);
 
+  useEffect(() => {
+    let unsub: { subscription: { unsubscribe: () => void } } | null = null;
+    supabase.auth.getSession().then(({ data }) => {
+      if (data.session?.user) {
+        navigate("/", { replace: true });
+      }
+    });
+    const { data: sub } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === "SIGNED_IN" && session?.user) {
+        navigate("/", { replace: true });
+      }
+    });
+    unsub = sub;
+    return () => {
+      unsub?.subscription.unsubscribe();
+    };
+  }, [navigate]);
+
   const mode = searchParams.get("mode") || (isLogin ? "login" : "register");
 
   // Utilitários de UX

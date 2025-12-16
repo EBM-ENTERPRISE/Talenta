@@ -261,3 +261,130 @@ export function makeJobConstraints(c: SearchConstraints): Constraint<RawJobItem>
 
   return constraints;
 }
+
+export type RawProfileItem = {
+  firstName?: string;
+  lastName?: string;
+  name?: string;
+  headline?: string;
+  location?: string | { parsed?: { text?: string } } | { linkedinText?: string };
+  profileLocation?: unknown;
+  geo?: unknown;
+  currentPosition?: Array<{ position?: string; companyName?: string; location?: string }>;
+};
+
+export function makeProfileConstraints(c: SearchConstraints): Constraint<RawProfileItem>[] {
+  const constraints: Constraint<RawProfileItem>[] = [];
+
+  const keywords = (c.keywords && c.keywords.length > 0)
+    ? c.keywords
+    : (c.refinedInput?.keyword || []);
+  if (keywords.length > 0) {
+    constraints.push({
+      id: 'profile_keywords',
+      label: `Palavras-chave (perfil): ${keywords.join(', ')}`,
+      mandatory: true,
+      check: (p: RawProfileItem) => {
+        const head = p.headline ?? '';
+        const curr = Array.isArray(p.currentPosition) && p.currentPosition.length > 0 ? p.currentPosition[0] : undefined;
+        const pos = curr?.position ?? '';
+        const comp = curr?.companyName ?? '';
+        const hay = `${head} ${pos} ${comp}`;
+        return textMatchesAnyPhrase(hay, keywords);
+      },
+    });
+  }
+
+  const techSkills = c.mustHaveSkills || [];
+  const kTech = typeof c.kTechMin === 'number' && c.kTechMin > 0 ? c.kTechMin : (techSkills.length > 0 ? 1 : 0);
+  if (techSkills.length > 0 && kTech > 0) {
+    constraints.push({
+      id: 'profile_tech_skills',
+      label: `Competências técnicas (≥${kTech}): ${techSkills.join(', ')}`,
+      mandatory: true,
+      check: (p: RawProfileItem) => {
+        const head = p.headline ?? '';
+        const curr = Array.isArray(p.currentPosition) && p.currentPosition.length > 0 ? p.currentPosition[0] : undefined;
+        const pos = curr?.position ?? '';
+        const comp = curr?.companyName ?? '';
+        const hay = `${head} ${pos} ${comp}`;
+        let count = 0;
+        for (const s of techSkills) {
+          if (phraseSatisfied(hay, s)) count++;
+        }
+        return count >= kTech;
+      },
+    });
+  }
+
+  const softSkills = c.softSkills || [];
+  const softThr = typeof c.softSkillsThreshold === 'number' && c.softSkillsThreshold > 0 ? c.softSkillsThreshold : 0.4;
+  if (softSkills.length > 0) {
+    constraints.push({
+      id: 'profile_soft_skills',
+      label: `Soft skills (≥${Math.round(softThr * 100)}%): ${softSkills.join(', ')}`,
+      mandatory: false,
+      check: (p: RawProfileItem) => {
+        const head = p.headline ?? '';
+        const curr = Array.isArray(p.currentPosition) && p.currentPosition.length > 0 ? p.currentPosition[0] : undefined;
+        const pos = curr?.position ?? '';
+        const comp = curr?.companyName ?? '';
+        const hay = `${head} ${pos} ${comp}`;
+        let count = 0;
+        for (const s of softSkills) {
+          if (phraseSatisfied(hay, s)) count++;
+        }
+        const ratio = softSkills.length > 0 ? count / softSkills.length : 0;
+        return ratio >= softThr;
+      },
+    });
+  }
+
+  const loc = c.refinedInput?.location?.trim();
+  if (loc) {
+    constraints.push({
+      id: 'profile_location',
+      label: `Localização: ${loc}`,
+      mandatory: (c.locationPriority === 'required'),
+      check: (p: RawProfileItem) => {
+        const v = p.location;
+        let inLoc = '';
+        if (typeof v === 'string') inLoc = v;
+        else if (v && typeof v === 'object') {
+          const o = v as Record<string, unknown>;
+          const parsed = o['parsed'] as Record<string, unknown> | undefined;
+          const txt = typeof o['linkedinText'] === 'string' ? (o['linkedinText'] as string) : undefined;
+          const ptxt = parsed && typeof parsed['text'] === 'string' ? (parsed['text'] as string) : undefined;
+          inLoc = ptxt || txt || '';
+        }
+        if (!inLoc) {
+          const curr = Array.isArray(p.currentPosition) && p.currentPosition.length > 0 ? p.currentPosition[0] : undefined;
+          inLoc = curr?.location ?? '';
+        }
+        const hay = normalizeBase(inLoc).replace(/[,]+/g, ' ');
+        const tokens = normalizeBase(loc).replace(/[,]+/g, ' ').split(/[\s-]+/).filter(Boolean);
+        return tokens.every((t) => includesNormalized(hay, t));
+      },
+    });
+  }
+
+  if (typeof c.candidateExperienceYears === 'number' && c.candidateExperienceYears > 0) {
+    constraints.push({
+      id: 'profile_experience',
+      label: `Experiência mínima: ${c.candidateExperienceYears} anos`,
+      mandatory: true,
+      check: (p: RawProfileItem) => {
+        const head = p.headline ?? '';
+        const curr = Array.isArray(p.currentPosition) && p.currentPosition.length > 0 ? p.currentPosition[0] : undefined;
+        const pos = curr?.position ?? '';
+        const comp = curr?.companyName ?? '';
+        const hay = `${head} ${pos} ${comp}`;
+        const years = extractRequiredMinYears(hay);
+        if (years == null) return false;
+        return years >= c.candidateExperienceYears!;
+      },
+    });
+  }
+
+  return constraints;
+}
